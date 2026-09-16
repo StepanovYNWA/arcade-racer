@@ -8,6 +8,7 @@
 <style>
   :root{
     --accent:#ffc21a;
+    --accent-dim:#c8961a; --good:#4ade80;
     --panel:rgba(14,18,24,0.66);
     --ink:#f3f6fa; --ink-soft:#aab4c0;
     --sans:"Inter","Segoe UI",system-ui,-apple-system,sans-serif;
@@ -28,8 +29,26 @@
   #debug .sub{font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin-top:3px}
   #debug .backend{color:var(--accent);font-weight:700}
 
+  #speedo{bottom:20px;left:20px}
+  #speedo .top{display:flex;align-items:baseline;gap:8px}
+  #speedo .n{font-family:var(--mono);font-size:56px;font-weight:700;line-height:.85;
+             letter-spacing:-.02em}
+  #speedo .u{font-size:14px;color:var(--ink-soft);font-weight:600}
+  #barwrap .cap{font-size:10px;color:var(--ink-soft);margin:7px 0 2px}
+  .bar{position:relative;height:6px;width:190px;background:rgba(255,255,255,.14);
+       border-radius:4px;overflow:hidden}
+  #spdfill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent-dim),var(--accent));
+           border-radius:4px}
+  #powfill{height:100%;width:0%;background:linear-gradient(90deg,#3b82f6,#60d5ff);
+           border-radius:4px;transition:width .05s linear}
+  #powfill.peak{background:linear-gradient(90deg,#2f9e63,var(--good))}
+  /* отметка идеального ритма: пик момента стоит ровно на середине шкалы оборотов */
+  .tick{position:absolute;top:-2px;left:50%;width:2px;height:10px;
+        background:rgba(255,255,255,.75);border-radius:1px}
+
   #help{bottom:20px;right:20px;text-align:right;font-size:12px;
         color:var(--ink-soft);line-height:1.65}
+  #help b{color:var(--ink);font-weight:600}
   #help .key{color:var(--accent);font-weight:700}
 
   #fatal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
@@ -46,9 +65,20 @@
   <div class="sub">рендер: <span class="backend" id="dbgBackend">…</span> · <span id="dbgFps">—</span> fps</div>
 </div>
 
+<div id="speedo" class="hud">
+  <div class="top"><span class="n" id="spd">0</span><span class="u">km/h</span></div>
+  <div id="barwrap">
+    <div class="cap">скорость</div>
+    <div class="bar"><div id="spdfill"></div></div>
+    <div class="cap">обороты — держи стрелку у метки</div>
+    <div class="bar"><div id="powfill"></div><div class="tick"></div></div>
+  </div>
+</div>
+
 <div id="help" class="hud">
-  <div><span class="key">1 … 5</span> — переключить трассу</div>
-  <div>физики и управления пока нет</div>
+  <div><span class="key">↑ / W</span> — <b>жми часто</b>, не удерживай!</div>
+  <div><span class="key">← →</span> / A D — руль · <span class="key">↓</span> тормоз · <span class="key">Пробел</span> ручник</div>
+  <div><span class="key">1 … 5</span> — трасса · <span class="key">R</span> — на старт</div>
 </div>
 
 <div id="fatal"><div id="fatalMsg"></div></div>

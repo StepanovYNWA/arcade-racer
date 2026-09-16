@@ -1,26 +1,24 @@
 import { BoxGeometry, CircleGeometry, CylinderGeometry, Group, Mesh } from "three/webgpu";
 
+import { WHEELS, WHEEL_RADIUS } from "../constants";
+
 import { PALETTE, blobShadowMaterial, flatMaterial } from "./materials";
 
 /**
- * Визуальная машинка — копия low-poly модели из прототипа.
- * Это только меш: с M2 шасси будет двигать Rapier, а группа станет его представлением.
+ * Визуальная машинка — low-poly модель из прототипа.
+ * Положение группы задаёт физика; колёса подчиняются подвеске и рулю.
  */
 export interface Car {
   readonly group: Group;
-  /** кузов — его кренит в повороте (rotation.z) */
+  /** кузов — его кренит в повороте */
   readonly body: Mesh;
-  /** четыре колеса — их крутит по скорости (rotation.x) */
-  readonly wheels: Mesh[];
+  /**
+   * Пивоты колёс в порядке WHEELS. Поворот руля идёт в rotation.y, качение —
+   * в rotation.x, ход подвески — в position.y; порядок Эйлера YXZ, чтобы
+   * колесо крутилось вокруг уже повёрнутой оси, а не вокруг исходной.
+   */
+  readonly wheels: Group[];
 }
-
-/** смещения колёс от центра: [x, z] */
-const WHEEL_OFFSETS: readonly (readonly [number, number])[] = [
-  [-1.05, -1.3],
-  [1.05, -1.3],
-  [-1.05, 1.3],
-  [1.05, 1.3],
-];
 
 export function createCar(color: number): Car {
   const group = new Group();
@@ -33,16 +31,21 @@ export function createCar(color: number): Car {
   cabin.position.set(0, 1.35, -0.2);
   cabin.castShadow = true;
 
-  const wheels: Mesh[] = [];
-  const wheelGeom = new CylinderGeometry(0.6, 0.6, 0.5, 10);
+  const wheels: Group[] = [];
+  const wheelGeom = new CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, 0.5, 10);
   const wheelMat = flatMaterial(PALETTE.wheel);
-  for (const [x, z] of WHEEL_OFFSETS) {
-    const w = new Mesh(wheelGeom, wheelMat);
-    w.rotation.z = Math.PI / 2;
-    w.position.set(x, 0.6, z);
-    w.castShadow = true;
-    group.add(w);
-    wheels.push(w);
+  for (const spec of WHEELS) {
+    const mesh = new Mesh(wheelGeom, wheelMat);
+    mesh.rotation.z = Math.PI / 2; // положить цилиндр на бок
+    mesh.castShadow = true;
+
+    const pivot = new Group();
+    pivot.rotation.order = "YXZ";
+    pivot.position.set(spec.x, WHEEL_RADIUS, spec.z);
+    pivot.add(mesh);
+
+    group.add(pivot);
+    wheels.push(pivot);
   }
 
   // мягкий подтенок: настоящая тень от кузова на тёмном асфальте почти не читается

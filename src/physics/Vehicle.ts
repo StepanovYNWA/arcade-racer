@@ -1,0 +1,302 @@
+import RAPIER from "@dimforge/rapier3d-compat";
+import { MathUtils, Quaternion, Vector3 } from "three/webgpu";
+
+import {
+  ANGULAR_DAMPING,
+  BRAKE_FORCE,
+  CAR_MASS,
+  CHASSIS_HALF,
+  CHASSIS_Y,
+  ENGINE_FORCE_MAX,
+  ENGINE_SPEED_FALLOFF,
+  FRICTION_SLIP_FRONT,
+  FRICTION_SLIP_REAR,
+  HANDBRAKE_FORCE,
+  LINEAR_DAMPING,
+  MAXSPEED,
+  MAX_REV,
+  REVERSE_FORCE,
+  REV_DECAY,
+  REV_KICK,
+  REV_MAX,
+  REV_PEAK,
+  ROLL_RESIST_FORCE,
+  SIDE_FRICTION_FRONT,
+  SIDE_FRICTION_REAR,
+  STEER_MAX,
+  STEER_RATE,
+  STEER_SPEED_FALLOFF,
+  SUSPENSION_ANCHOR_Y,
+  SUSPENSION_COMPRESSION,
+  SUSPENSION_MAX_FORCE,
+  SUSPENSION_RELAXATION,
+  SUSPENSION_REST,
+  SUSPENSION_STIFFNESS,
+  SUSPENSION_TRAVEL,
+  TORQUE_FALLOFF,
+  TORQUE_FLOOR,
+  WHEELS,
+  WHEEL_RADIUS,
+} from "../constants";
+import type { PlayerInput } from "../core/Input";
+
+import type { PhysicsWorld } from "./World";
+
+export interface Spawn {
+  position: Vector3;
+  /** курс в тех же единицах, что и mesh.rotation.y */
+  heading: number;
+}
+
+/** Ниже этой скорости «тормоз» означает «сдать назад», как в прототипе. */
+const REVERSE_THRESHOLD = 0.5;
+
+/**
+ * Кривая момента от оборотов.
+ *
+ * До пика момент растёт линейно — так же, как в прототипе тяга росла линейно по
+ * частоте нажатий. Обязательно torque(0) = 0: иначе машина газует сама, без нажатий,
+ * и вся механика «жми часто» теряет смысл.
+ *
+ * За пиком момент мягко падает и упирается в полку TORQUE_FLOOR. Смысл полки:
+ * попадать в такт выгодно, но бестолковый долбёж не превращает машину в неуправляемую —
+ * предсказуемость важнее реализма.
+ *
+ * Масштаб сходится с прототипом: одно нажатие с места поднимает обороты на REV_KICK,
+ * они гаснут с постоянной REV_DECAY, и полный импульс выходит
+ * ENGINE_FORCE_MAX / REV_PEAK * REV_KICK / REV_DECAY = 3960 Н·с, то есть ровно
+ * TAP_IMPULSE = 3.3 м/с прибавки для машины массой CAR_MASS.
+ */
+function torqueCurve(revs: number): number {
+  const r = revs / REV_PEAK;
+  if (r <= 1) return r;
+  return Math.max(TORQUE_FLOOR, 1 - TORQUE_FALLOFF * (r - 1));
+}
+
+/**
+ * Машина на raycast-подвеске Rapier.
+ *
+ * Шасси — динамическое тело, четыре колеса — лучи с подвеской. Занос такая модель
+ * даёт «бесплатно» через трение колёс, но настраивается он в M3; здесь задача проще —
+ * чтобы машина ехала, слушалась руля и держалась на трассе.
+ */
+export class Vehicle {
+  readonly body: RAPIER.RigidBody;
+  private readonly controller: RAPIER.DynamicRayCastVehicleController;
+  private readonly world: RAPIER.World;
+
+  private revs = 0;
+  private steerAngle = 0;
+  private lastEngine = 0;
+  private lastBrake = 0;
+
+  // состояние для интерполяции рендера между физическими тиками
+  private readonly prevPos = new Vector3();
+  private readonly currPos = new Vector3();
+  private readonly prevRot = new Quaternion();
+  private readonly currRot = new Quaternion();
+
+  constructor(physics: PhysicsWorld, spawn: Spawn) {
+    this.world = physics.world;
+
+    const rot = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), spawn.heading);
+    const desc = RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(spawn.position.x, spawn.position.y, spawn.position.z)
+      .setRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
+      .setLinearDamping(LINEAR_DAMPING)
+      .setAngularDamping(ANGULAR_DAMPING)
+      // на 46 м/с за тик машина проходит 0.77 м — без CCD она прошивает барьер
+      .setCcdEnabled(true)
+      .setCanSleep(false);
+
+    this.body = this.world.createRigidBody(desc);
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(CHASSIS_HALF.x, CHASSIS_HALF.y, CHASSIS_HALF.z)
+        .setTranslation(0, CHASSIS_Y, 0)
+        .setMass(CAR_MASS)
+        .setFriction(0.4),
+      this.body,
+    );
+
+    this.controller = this.world.createVehicleController(this.body);
+    this.controller.indexUpAxis = 1;
+    // да, сеттер в биндингах Rapier называется именно так (геттер — indexForwardAxis)
+    this.controller.setIndexForwardAxis = 2;
+
+    for (const w of WHEELS) {
+      this.controller.addWheel(
+        { x: w.x, y: SUSPENSION_ANCHOR_Y, z: w.z },
+        { x: 0, y: -1, z: 0 },
+        { x: -1, y: 0, z: 0 },
+        SUSPENSION_REST,
+        WHEEL_RADIUS,
+      );
+    }
+
+    WHEELS.forEach((w, i) => {
+      this.controller.setWheelSuspensionStiffness(i, SUSPENSION_STIFFNESS);
+      this.controller.setWheelSuspensionCompression(i, SUSPENSION_COMPRESSION);
+      this.controller.setWheelSuspensionRelaxation(i, SUSPENSION_RELAXATION);
+      this.controller.setWheelMaxSuspensionTravel(i, SUSPENSION_TRAVEL);
+      this.controller.setWheelMaxSuspensionForce(i, SUSPENSION_MAX_FORCE);
+      this.controller.setWheelFrictionSlip(i, w.front ? FRICTION_SLIP_FRONT : FRICTION_SLIP_REAR);
+      this.controller.setWheelSideFrictionStiffness(i, w.front ? SIDE_FRICTION_FRONT : SIDE_FRICTION_REAR);
+    });
+
+    this.readTransform(this.currPos, this.currRot);
+    this.prevPos.copy(this.currPos);
+    this.prevRot.copy(this.currRot);
+  }
+
+  /** Продольная скорость вдоль курса, м/с (со знаком). */
+  get speed(): number {
+    return this.controller.currentVehicleSpeed();
+  }
+
+  /** Обороты, нормированные к пику момента: 1.0 — идеальный ритм нажатий. */
+  get revsNorm(): number {
+    return this.revs / REV_PEAK;
+  }
+
+  /** Сколько колёс сейчас касается земли — нужно и для HUD, и для антизаноса в M5. */
+  get wheelsOnGround(): number {
+    let n = 0;
+    for (let i = 0; i < WHEELS.length; i++) if (this.controller.wheelIsInContact(i)) n++;
+    return n;
+  }
+
+  /**
+   * Тик управления. Вызывается в fixedUpdate ДО world.step():
+   * updateVehicle пересчитывает силы колёс и правит скорость шасси,
+   * а солвер уже разбирается со столкновениями.
+   */
+  update(input: PlayerInput, dt: number): void {
+    this.prevPos.copy(this.currPos);
+    this.prevRot.copy(this.currRot);
+
+    const speed = this.speed;
+    const speedFrac = MathUtils.clamp(Math.abs(speed) / MAXSPEED, 0, 1);
+
+    // --- газ: нажатия подкидывают обороты, без нажатий обороты падают ---
+    this.revs = Math.min(REV_MAX, this.revs + input.tap * REV_KICK);
+    this.revs = Math.max(0, this.revs - this.revs * REV_DECAY * dt);
+
+    const reversing = input.brake > 0 && speed < REVERSE_THRESHOLD;
+    const braking = input.brake > 0 && !reversing;
+
+    let engine = 0;
+    if (reversing) {
+      engine = speed > -MAX_REV ? -REVERSE_FORCE * input.brake : 0;
+    } else if (!braking && speed < MAXSPEED) {
+      engine = ENGINE_FORCE_MAX * torqueCurve(this.revs) * (1 - ENGINE_SPEED_FALLOFF * speedFrac);
+    }
+    // Тяга на тормозе обнуляется не для красоты: Rapier игнорирует тормоз на колесе,
+    // у которого ненулевая тяга, поэтому иначе задняя ось на тормозе просто не тормозит.
+    // Обороты при этом сохраняются — отпустил тормоз, и тяга вернулась без новых нажатий.
+
+    // --- тормоз и сопротивление качению ---
+    //
+    // Осторожно с единицами: setWheelEngineForce принимает силу и умножает её на шаг
+    // внутри, а setWheelBrake принимает уже готовый импульс. Если передать туда
+    // ньютоны, тормоз окажется сильнее двигателя в 1/dt раз и машина не тронется.
+    // Поэтому все *_FORCE здесь хранятся в ньютонах и переводятся в импульс явно.
+    const wheelCount = WHEELS.length;
+    const brakeForce = ROLL_RESIST_FORCE + (braking ? BRAKE_FORCE : 0);
+    const baseBrake = (brakeForce * dt) / wheelCount;
+
+    // --- руль: угол доводится с конечной скоростью и урезается на скорости ---
+    const steerTarget = input.steer * STEER_MAX * (1 - STEER_SPEED_FALLOFF * speedFrac);
+    const maxStep = STEER_RATE * dt;
+    this.steerAngle += MathUtils.clamp(steerTarget - this.steerAngle, -maxStep, maxStep);
+
+    this.lastEngine = engine;
+    this.lastBrake = baseBrake;
+
+    const driven = WHEELS.filter((w) => !w.front).length;
+    WHEELS.forEach((w, i) => {
+      // задний привод: тяга только на заднюю ось — с неё же в M3 начнётся занос
+      this.controller.setWheelEngineForce(i, w.front ? 0 : engine / driven);
+      this.controller.setWheelSteering(i, w.front ? this.steerAngle : 0);
+      const handbrake = input.handbrake && !w.front ? (HANDBRAKE_FORCE * dt) / driven : 0;
+      this.controller.setWheelBrake(i, baseBrake + handbrake);
+    });
+
+    this.controller.updateVehicle(dt);
+  }
+
+  /** Снять трансформ после world.step(). */
+  sync(): void {
+    this.readTransform(this.currPos, this.currRot);
+  }
+
+  private readTransform(pos: Vector3, rot: Quaternion): void {
+    const t = this.body.translation();
+    const r = this.body.rotation();
+    pos.set(t.x, t.y, t.z);
+    rot.set(r.x, r.y, r.z, r.w);
+  }
+
+  /** Положение и поворот для кадра между тиками. */
+  interpolate(alpha: number, outPos: Vector3, outRot: Quaternion): void {
+    outPos.lerpVectors(this.prevPos, this.currPos, alpha);
+    outRot.copy(this.prevRot).slerp(this.currRot, alpha);
+  }
+
+  /** Ход подвески i-го колеса — на сколько колесо опущено от точки крепления. */
+  suspensionLength(i: number): number {
+    return this.controller.wheelSuspensionLength(i) ?? SUSPENSION_REST;
+  }
+
+  /** Накопленный угол качения i-го колеса. */
+  wheelRotation(i: number): number {
+    return this.controller.wheelRotation(i) ?? 0;
+  }
+
+  /** Текущий угол поворота передних колёс. */
+  get steering(): number {
+    return this.steerAngle;
+  }
+
+  /**
+   * Срез сил на колёсах — для настройки баланса (DEV).
+   * Продольный и боковой импульсы плюс сила подвески показывают, упирается ли
+   * тяга в сцепление или во что-то ещё.
+   */
+  telemetry(): {
+    speed: number;
+    revs: number;
+    engine: number;
+    brake: number;
+    forward: number[];
+    side: number[];
+    suspension: number[];
+    contact: boolean[];
+  } {
+    const idx = WHEELS.map((_, i) => i);
+    return {
+      speed: this.speed,
+      revs: this.revs,
+      engine: this.lastEngine,
+      brake: this.lastBrake,
+      forward: idx.map((i) => this.controller.wheelForwardImpulse(i) ?? 0),
+      side: idx.map((i) => this.controller.wheelSideImpulse(i) ?? 0),
+      suspension: idx.map((i) => this.controller.wheelSuspensionForce(i) ?? 0),
+      contact: idx.map((i) => this.controller.wheelIsInContact(i)),
+    };
+  }
+
+  /** Поставить машину на сетку и обнулить движение. */
+  reset(spawn: Spawn): void {
+    const rot = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), spawn.heading);
+    this.body.setTranslation({ x: spawn.position.x, y: spawn.position.y, z: spawn.position.z }, true);
+    this.body.setRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w }, true);
+    this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.revs = 0;
+    this.steerAngle = 0;
+
+    this.readTransform(this.currPos, this.currRot);
+    this.prevPos.copy(this.currPos);
+    this.prevRot.copy(this.currRot);
+  }
+}

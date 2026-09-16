@@ -1,8 +1,13 @@
-import { Mesh, PlaneGeometry } from "three/webgpu";
+import { Mesh, PlaneGeometry, Quaternion, Vector3 } from "three/webgpu";
 
-import { COLORS } from "./constants";
+import { COLORS, SUSPENSION_ANCHOR_Y, WHEELS } from "./constants";
+import { KeyboardInput } from "./core/Input";
 import { Loop } from "./core/Loop";
 import { gridSlot } from "./game/grid";
+import { Barriers } from "./physics/Barriers";
+import { PhysicsDebugRender } from "./physics/DebugRender";
+import { Vehicle, type Spawn } from "./physics/Vehicle";
+import { PhysicsWorld } from "./physics/World";
 import { createCar } from "./render/Car";
 import { createCamera, fitCamera } from "./render/Camera";
 import { PALETTE, flatMaterial } from "./render/materials";
@@ -12,18 +17,25 @@ import { TRACKS } from "./track/tracks";
 import { DebugPanel, showFatal } from "./ui/debug";
 
 /**
- * M0–M1: каркас.
+ * M2: машина едет на физике Rapier.
  *
- * Есть: рендерер (WebGPU с автофоллбэком на WebGL2), фиксированный игровой цикл,
- * статичная изокамера с подгонкой под трассу, геометрия всех пяти трасс, одна машинка.
- * Нет: физики, управления, ИИ, препятствий, правил — это M2 и дальше.
+ * Есть: raycast-подвеска, стены по кромкам дороги, газ через частоту нажатий,
+ * руль, тормоз, задний ход, ручник. Всё это крутится в фиксированном тике,
+ * рендер интерполирует между тиками.
+ * Нет: заноса (M3), препятствий (M4), ИИ (M5), правил (M6).
  */
+
+/** чуть выше земли, чтобы на старте колёса не оказались в полу */
+const SPAWN_LIFT = 0.1;
 
 async function main(): Promise<void> {
   const app = document.getElementById("app");
   if (!app) throw new Error("не найден контейнер #app");
 
+  // WASM Rapier грузится асинхронно — это первый await в bootstrap
+  const physics = await PhysicsWorld.create();
   const { renderer, backend } = await createRenderer(app);
+
   const debug = new DebugPanel();
   debug.setBackend(backend);
 
@@ -39,27 +51,41 @@ async function main(): Promise<void> {
   const car = createCar(COLORS[0]!);
   scene.add(car.group);
 
+  const input = new KeyboardInput();
+  const physicsDebug = new URLSearchParams(location.search).has("physics")
+    ? new PhysicsDebugRender(physics, scene)
+    : null;
+
   let trackIndex = 0;
   let track: Track | null = null;
+  let barriers: Barriers | null = null;
+  let vehicle: Vehicle | null = null;
+
+  function spawnPoint(t: Track): Spawn {
+    const slot = gridSlot(t, 0);
+    return { position: slot.position.clone().setY(SPAWN_LIFT), heading: slot.heading };
+  }
 
   function loadTrack(index: number): void {
     if (track) {
       scene.remove(track.group);
       disposeTrack(track);
     }
+    barriers?.dispose();
 
     trackIndex = index;
     // сид от индекса: декор одной и той же трассы не пляшет между запусками
     track = buildTrack(TRACKS[index]!, index + 1);
     scene.add(track.group);
+    barriers = new Barriers(physics, track);
 
     fitCamera(camera, track.path, track.nrm, innerWidth / innerHeight);
 
-    // машинка на поул-позишн — та же формула, что расставит всю сетку в M6
-    const slot = gridSlot(track, 0);
-    car.group.position.copy(slot.position);
-    car.group.rotation.y = slot.heading;
+    const spawn = spawnPoint(track);
+    if (vehicle) vehicle.reset(spawn);
+    else vehicle = new Vehicle(physics, spawn);
 
+    input.clear();
     debug.setTrack(index, TRACKS.length, track.def.name);
   }
 
@@ -71,6 +97,10 @@ async function main(): Promise<void> {
   });
 
   addEventListener("keydown", (e) => {
+    if (e.code === "KeyR" && track && vehicle) {
+      vehicle.reset(spawnPoint(track));
+      return;
+    }
     const n = Number(e.key);
     if (Number.isInteger(n) && n >= 1 && n <= TRACKS.length && n - 1 !== trackIndex) {
       loadTrack(n - 1);
@@ -78,18 +108,39 @@ async function main(): Promise<void> {
     }
   });
 
+  const framePos = new Vector3();
+  const frameRot = new Quaternion();
+
   const loop = new Loop({
-    fixedUpdate: () => {
-      // сюда с M2 приходят шаг Rapier, ввод и фазовые часы —
-      // вся геймлогика должна жить здесь, а не в render()
+    fixedUpdate: (dt) => {
+      // порядок важен: силы колёс -> шаг мира -> снять трансформ
+      vehicle!.update(input.read(), dt);
+      physics.step();
+      vehicle!.sync();
     },
-    render: () => {
+    render: (alpha) => {
+      const v = vehicle!;
+      v.interpolate(alpha, framePos, frameRot);
+      car.group.position.copy(framePos);
+      car.group.quaternion.copy(frameRot);
+
+      WHEELS.forEach((spec, i) => {
+        const pivot = car.wheels[i]!;
+        pivot.position.y = SUSPENSION_ANCHOR_Y - v.suspensionLength(i);
+        pivot.rotation.y = spec.front ? v.steering : 0;
+        pivot.rotation.x = v.wheelRotation(i);
+      });
+
+      debug.setDrive(v.speed, v.revsNorm);
+      physicsDebug?.update();
       renderer.render(scene, camera);
     },
   });
 
   if (import.meta.env.DEV) {
-    Object.assign(globalThis, { __racer: { scene, camera, renderer, getTrack: () => track } });
+    Object.assign(globalThis, {
+      __racer: { scene, camera, renderer, physics, loop, getTrack: () => track, getVehicle: () => vehicle },
+    });
   }
 
   renderer.setAnimationLoop((now: number) => {
