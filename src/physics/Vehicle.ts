@@ -8,7 +8,10 @@ import {
   CHASSIS_HALF,
   CHASSIS_Y,
   DRIFT_IDLE_ANGLE,
+  DRIFT_HOLD_RAMP,
+  DRIFT_HOLD_TIME,
   DRIFT_MAX_ANGLE,
+  DRIFT_RELEASE_RATE,
   DRIFT_MIN_SPEED,
   DRIFT_RECOVERY,
   DRIFT_RECOVERY_RAMP,
@@ -19,6 +22,8 @@ import {
   FRICTION_SLIP_FRONT_BRAKING,
   FRICTION_SLIP_REAR,
   FRICTION_SLIP_REAR_BRAKING,
+  GRIP_ALIGN_DRIFT,
+  GRIP_ALIGN_RATE,
   LINEAR_DAMPING,
   MAXSPEED,
   MAX_REV,
@@ -32,9 +37,6 @@ import {
   SIDE_FRICTION_FRONT_TURN,
   SIDE_FRICTION_REAR,
   SIDE_FRICTION_REAR_TURN,
-  STEER_GRIP_DEADZONE,
-  STEER_GRIP_FULL,
-  STEER_SMOOTH_DECAY,
   STEER_MAX,
   STEER_RATE,
   STEER_SPEED_FALLOFF,
@@ -44,6 +46,8 @@ import {
   SUSPENSION_RELAXATION,
   SUSPENSION_REST,
   SUSPENSION_STIFFNESS,
+  TURN_RATE,
+  TURN_RATE_SPEED_DAMP,
   SUSPENSION_TRAVEL,
   TORQUE_FALLOFF,
   TORQUE_FLOOR,
@@ -110,17 +114,14 @@ export class Vehicle {
   /**
    * Два разных «насколько вывернут руль», и путать их нельзя.
    *
-   * Доля считается от ТЕКУЩЕГО (урезанного скоростью) максимума: «до упора» должно
-   * означать «до упора» на любой скорости.
-   *
-   * turnIntensity — та же доля, но с задержкой на спад. По ней падает сцепление
-   * и поднимается потолок заноса: без задержки пауза между нажатиями стрелки
-   * мгновенно возвращала сцепление и обрывала скольжение.
+   * Занос зависит не от угла руля, а от того, как долго руль держат в одну сторону.
+   * Короткий доворот машину не срывает, длинное удержание — срывает.
    */
-  /** сглаженный угол колёс: доворот мгновенный, возврат с задержкой */
-  private steerSmooth = 0;
-  /** доля выворота по сглаженному углу, 0..1 */
-  private turnIntensity = 0;
+  /** сколько секунд руль держат в одну сторону; сбрасывается отпусканием и сменой стороны */
+  private steerHold = 0;
+  private steerHoldDir = 0;
+  /** глубина срыва, 0..1: 0 — машина цепляется и слушается руля, 1 — полный занос */
+  private driftFactor = 0;
   /** момент инерции шасси вокруг вертикали — нужен, чтобы гасить рыскание в физичных единицах */
   private readonly inertiaY: number;
 
@@ -219,11 +220,7 @@ export class Vehicle {
     // входит в скольжении целиком, а не срывает один только зад
     // Доля выворота от текущего максимума, за вычетом мёртвой зоны: подруливание
     // на прямой сцепление не трогает, а заметный поворот срывает обе оси.
-    const k = MathUtils.clamp(
-      (this.turnIntensity - STEER_GRIP_DEADZONE) / (STEER_GRIP_FULL - STEER_GRIP_DEADZONE),
-      0,
-      1,
-    );
+    const k = this.driftFactor;
     const frontSide = SIDE_FRICTION_FRONT + (SIDE_FRICTION_FRONT_TURN - SIDE_FRICTION_FRONT) * k;
     const rearSide = SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_TURN - SIDE_FRICTION_REAR) * k;
 
@@ -292,25 +289,25 @@ export class Vehicle {
     const steerTarget = input.steer * steerRange;
     const maxStep = STEER_RATE * dt;
     this.steerAngle += MathUtils.clamp(steerTarget - this.steerAngle, -maxStep, maxStep);
-    // доля от текущего максимума, а не от полного STEER_MAX: угол колёс сам урезается
-    // с ростом скорости, и «до упора» должно означать «до упора» на любой скорости
-    // Сглаженный руль: доворот повторяем мгновенно, возврат тянем с задержкой.
-    // От него зависит всё скольжение сразу, поэтому пауза между нажатиями стрелки
-    // больше не обрывает занос — ни по сцеплению, ни по удержанию курса.
-    // Осторожно со знаком: при отпущенной стрелке угол ровно ноль, и проверка
-    // «знак сменился» сработала бы на sign(0) = 0, обнуляя сглаживание ровно там,
-    // где оно и нужно. Переворот засчитываем только при двух ненулевых знаках.
-    const flipped =
-      this.steerAngle !== 0 &&
-      this.steerSmooth !== 0 &&
-      Math.sign(this.steerAngle) !== Math.sign(this.steerSmooth);
-    if (Math.abs(this.steerAngle) >= Math.abs(this.steerSmooth) || flipped) {
-      this.steerSmooth = this.steerAngle;
-    } else {
-      const decay = STEER_SMOOTH_DECAY * dt;
-      this.steerSmooth -= Math.sign(this.steerSmooth) * Math.min(decay, Math.abs(this.steerSmooth));
+    // --- срыв: от длительности удержания руля, а не от его угла ---
+    //
+    // Короткий доворот заносом не отзывается вовсе — машина просто слушается руля.
+    // Отпустил стрелку или качнул в другую сторону — отсчёт сбрасывается и сцепление
+    // возвращается. Прежний вариант (сглаженный угол руля с медленным спадом) работал
+    // защёлкой: после одного полного выворота машина оставалась скользкой ещё около
+    // двух секунд, и любое следующее касание руля попадало в уже сорванное состояние.
+    const dir = Math.sign(input.steer);
+    if (dir !== 0 && dir === this.steerHoldDir) this.steerHold += dt;
+    else {
+      this.steerHoldDir = dir;
+      this.steerHold = dir !== 0 ? dt : 0;
     }
-    this.turnIntensity = Math.min(1, Math.abs(this.steerSmooth) / Math.max(steerRange, 1e-4));
+    const wanted =
+      dir === 0 ? 0 : MathUtils.clamp((this.steerHold - DRIFT_HOLD_TIME) / DRIFT_HOLD_RAMP, 0, 1);
+    this.driftFactor =
+      wanted > this.driftFactor
+        ? wanted
+        : Math.max(wanted, this.driftFactor - DRIFT_RELEASE_RATE * dt);
 
     this.lastEngine = engine;
     this.lastBrake = baseBrake;
@@ -348,8 +345,16 @@ export class Vehicle {
     // Велосипедная модель даёт темп доворота по геометрии руля, но на полном вывороте
     // это почти 180°/с — разворот на месте. Потолок и превращает поворот в скольжение:
     // корпус доворачивается медленно, а машину несёт по дуге шире геометрической.
-    const kinematic = (this.speed * Math.tan(this.steerSmooth)) / WHEELBASE;
-    const expected = MathUtils.clamp(kinematic, -YAW_RATE_MAX, YAW_RATE_MAX);
+    const kinematic = (this.speed * Math.tan(this.steerAngle)) / WHEELBASE;
+    // Вне заноса машина доворачивается ровно по геометрии руля, иначе на обычном
+    // повороте она казалась бы вялой. Потолок вмешивается пропорционально срыву.
+    const speedFrac = MathUtils.clamp(Math.abs(this.speed) / MAXSPEED, 0, 1);
+    // вне заноса — предел прототипа: чем быстрее едешь, тем ленивее доворот
+    const gripCap = TURN_RATE * (1 - TURN_RATE_SPEED_DAMP * speedFrac);
+    const gripped = MathUtils.clamp(kinematic, -gripCap, gripCap);
+    // в заносе — жёсткий потолок, он и превращает поворот в скольжение
+    const capped = MathUtils.clamp(kinematic, -YAW_RATE_MAX, YAW_RATE_MAX);
+    const expected = gripped + (capped - gripped) * this.driftFactor;
     const excess = this.body.angvel().y - expected;
     this.body.applyTorqueImpulse({ x: 0, y: -excess * YAW_FOLLOW * this.inertiaY * dt, z: 0 }, true);
   }
@@ -383,26 +388,34 @@ export class Vehicle {
       else if (slip < -Math.PI / 2) slip += Math.PI;
     }
 
-    // Потолок раскрывается по фактическому углу колёс: он доводится плавно,
-    // поэтому потолок разжимается и сжимается без рывка.
-    const limit = DRIFT_IDLE_ANGLE + (DRIFT_MAX_ANGLE - DRIFT_IDLE_ANGLE) * this.turnIntensity;
-    const excess = Math.abs(slip) - limit;
-    if (excess <= 0) return;
+    // Возврат вектора скорости к курсу работает ВСЕГДА, а не только за потолком:
+    // боковое скольжение постепенно переходит в движение по курсу, поэтому занос
+    // не тянется бесконечно, а машина едет не только вбок, но и вперёд. Вне заноса
+    // возврат быстрый — руль отзывчивый; в заносе медленный, но не нулевой.
+    const alignRate = GRIP_ALIGN_RATE + (GRIP_ALIGN_DRIFT - GRIP_ALIGN_RATE) * this.driftFactor;
+    let turn = Math.min(Math.abs(slip), alignRate * dt);
 
-    // Поворот вектора скорости к курсу; модуль скорости сохраняется, энергия не
-    // добавляется. Скорость возврата растёт с глубиной срыва: у потолка стабилизатор
-    // почти незаметен, а дальше упирается стеной.
-    // Жёсткость нарастает только за настоящей стеной (DRIFT_MAX_ANGLE). Внутри неё
-    // возврат всегда мягкий, иначе сжатие потолка выщёлкивало бы машину из заноса.
-    const beyondWall = Math.max(0, Math.abs(slip) - DRIFT_MAX_ANGLE);
-    const rate = DRIFT_RECOVERY + DRIFT_RECOVERY_RAMP * beyondWall;
-    const theta = -Math.sign(slip) * Math.min(excess, rate * dt);
+    // За потолком сверх того включается жёсткая стена против разворота.
+    const limit = DRIFT_IDLE_ANGLE + (DRIFT_MAX_ANGLE - DRIFT_IDLE_ANGLE) * this.driftFactor;
+    const excess = Math.abs(slip) - limit;
+    if (excess > 0) {
+      const beyondWall = Math.max(0, Math.abs(slip) - DRIFT_MAX_ANGLE);
+      const rate = DRIFT_RECOVERY + DRIFT_RECOVERY_RAMP * beyondWall;
+      turn = Math.max(turn, Math.min(excess, rate * dt));
+
+      const av = this.body.angvel();
+      this.body.applyTorqueImpulse(
+        { x: 0, y: -av.y * DRIFT_YAW_DAMPING * this.inertiaY * dt, z: 0 },
+        true,
+      );
+    }
+    if (turn <= 0) return;
+
+    // Поворот вектора скорости к курсу; модуль скорости сохраняется, энергия не добавляется.
+    const theta = -Math.sign(slip) * turn;
     const c = Math.cos(theta);
     const s = Math.sin(theta);
     this.body.setLinvel({ x: lv.x * c + lv.z * s, y: lv.y, z: lv.z * c - lv.x * s }, true);
-
-    const av = this.body.angvel();
-    this.body.applyTorqueImpulse({ x: 0, y: -av.y * DRIFT_YAW_DAMPING * this.inertiaY * dt, z: 0 }, true);
   }
 
   /** Снять трансформ после world.step(). */
