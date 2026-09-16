@@ -2,7 +2,7 @@
  * Ввод игрока в виде, одинаковом для человека и для ИИ.
  *
  * Общий интерфейс усилий (план, п. 6.3 и 7): драйвер выдаёт «сколько раз нажали,
- * куда руль, тормоз, ручник», а кто его наполнил — клавиатура, геймпад или
+ * куда руль, тормоз», а кто его наполнил — клавиатура, геймпад или
  * ИИ-водитель с M5 — машине безразлично.
  */
 export interface PlayerInput {
@@ -12,19 +12,17 @@ export interface PlayerInput {
   steer: number;
   /** тормоз/задний ход, 0..1 */
   brake: number;
-  handbrake: boolean;
 }
 
 export function emptyInput(): PlayerInput {
-  return { tap: 0, steer: 0, brake: 0, handbrake: false };
+  return { tap: 0, steer: 0, brake: 0 };
 }
 
 const TAP_KEYS = ["ArrowUp", "KeyW"];
 const BRAKE_KEYS = ["ArrowDown", "KeyS"];
 const LEFT_KEYS = ["ArrowLeft", "KeyA"];
 const RIGHT_KEYS = ["ArrowRight", "KeyD"];
-const HANDBRAKE_KEYS = ["Space"];
-const HELD = [...BRAKE_KEYS, ...LEFT_KEYS, ...RIGHT_KEYS, ...HANDBRAKE_KEYS, ...TAP_KEYS];
+const HELD = [...BRAKE_KEYS, ...LEFT_KEYS, ...RIGHT_KEYS, ...TAP_KEYS];
 
 /**
  * Клавиатура для первого игрока.
@@ -63,7 +61,6 @@ export class KeyboardInput {
     this.taps = 0;
     this.input.steer = (this.any(LEFT_KEYS) ? 1 : 0) - (this.any(RIGHT_KEYS) ? 1 : 0);
     this.input.brake = this.any(BRAKE_KEYS) ? 1 : 0;
-    this.input.handbrake = this.any(HANDBRAKE_KEYS);
     return this.input;
   }
 

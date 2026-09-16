@@ -9,9 +9,10 @@ import {
   CHASSIS_Y,
   DRIFT_IDLE_ANGLE,
   DRIFT_MAX_ANGLE,
-  DRIFT_MAX_ANGLE_HANDBRAKE,
   DRIFT_MIN_SPEED,
+  DRIFT_PERMIT_DECAY,
   DRIFT_RECOVERY,
+  DRIFT_RECOVERY_RAMP,
   DRIFT_YAW_DAMPING,
   ENGINE_FORCE_MAX,
   ENGINE_SPEED_FALLOFF,
@@ -19,9 +20,6 @@ import {
   FRICTION_SLIP_FRONT_BRAKING,
   FRICTION_SLIP_REAR,
   FRICTION_SLIP_REAR_BRAKING,
-  HANDBRAKE_FRICTION_SLIP,
-  HANDBRAKE_SIDE_FRICTION,
-  HANDBRAKE_FORCE,
   LINEAR_DAMPING,
   MAXSPEED,
   MAX_REV,
@@ -59,8 +57,8 @@ export interface Spawn {
   heading: number;
 }
 
-/** Режим сцепления: под тормозом оси цепляются, ручник срывает заднюю. */
-type GripMode = "drive" | "brake" | "handbrake";
+/** Режим сцепления: под тормозом оси цепляются, в остальное время зад скользит. */
+type GripMode = "drive" | "brake";
 
 /** Ниже этой скорости «тормоз» означает «сдать назад», как в прототипе. */
 const REVERSE_THRESHOLD = 0.5;
@@ -103,8 +101,21 @@ export class Vehicle {
   private steerAngle = 0;
   private lastEngine = 0;
   private lastBrake = 0;
-  /** насколько вывернут руль от текущего максимума, 0..1 */
+  /**
+   * Два разных «насколько вывернут руль», и путать их нельзя.
+   *
+   * steerFrac — доля от текущего (урезанного скоростью) максимума. По ней поднимается
+   * потолок заноса: «до упора» должно означать «до упора» на любой скорости.
+   *
+   * steerFracAbs — доля от полного STEER_MAX. По ней падает сцепление задней оси.
+   * Считать сцепление по первой было ошибкой: на 140 км/ч максимум угла колёс вдвое
+   * меньше, и мелкая правка руля на прямой засчитывалась как полный выворот — зад
+   * срывало там, где игрок всего лишь подруливал.
+   */
   private steerFrac = 0;
+  private steerFracAbs = 0;
+  /** разрешение на занос: растёт с рулём мгновенно, падает с задержкой */
+  private driftPermit = 0;
   /** момент инерции шасси вокруг вертикали — нужен, чтобы гасить рыскание в физичных единицах */
   private readonly inertiaY: number;
 
@@ -201,21 +212,19 @@ export class Vehicle {
     const braking = mode === "brake";
     // зад тем скользче, чем круче вывернут руль: занос приходит в резкий поворот
     const rearSide =
-      SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_TURN - SIDE_FRICTION_REAR) * this.steerFrac;
+      SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_TURN - SIDE_FRICTION_REAR) * this.steerFracAbs;
 
     WHEELS.forEach((w, i) => {
-      const rearLoose = mode === "handbrake" && !w.front;
-
-      let slip: number;
-      if (rearLoose) slip = HANDBRAKE_FRICTION_SLIP;
-      else if (w.front) slip = braking ? FRICTION_SLIP_FRONT_BRAKING : FRICTION_SLIP_FRONT;
-      else slip = braking ? FRICTION_SLIP_REAR_BRAKING : FRICTION_SLIP_REAR;
+      const slip = w.front
+        ? braking
+          ? FRICTION_SLIP_FRONT_BRAKING
+          : FRICTION_SLIP_FRONT
+        : braking
+          ? FRICTION_SLIP_REAR_BRAKING
+          : FRICTION_SLIP_REAR;
 
       this.controller.setWheelFrictionSlip(i, slip);
-      this.controller.setWheelSideFrictionStiffness(
-        i,
-        rearLoose ? HANDBRAKE_SIDE_FRICTION : w.front ? SIDE_FRICTION_FRONT : rearSide,
-      );
+      this.controller.setWheelSideFrictionStiffness(i, w.front ? SIDE_FRICTION_FRONT : rearSide);
     });
   }
 
@@ -273,24 +282,23 @@ export class Vehicle {
     // доля от текущего максимума, а не от полного STEER_MAX: угол колёс сам урезается
     // с ростом скорости, и «до упора» должно означать «до упора» на любой скорости
     this.steerFrac = Math.min(1, Math.abs(this.steerAngle) / Math.max(steerRange, 1e-4));
+    this.steerFracAbs = Math.min(1, Math.abs(this.steerAngle) / STEER_MAX);
 
     this.lastEngine = engine;
     this.lastBrake = baseBrake;
 
-    // ручник важнее тормоза: он и задуман как срыв задней оси
-    this.applyGrip(input.handbrake ? "handbrake" : braking || reversing ? "brake" : "drive");
+    this.applyGrip(braking || reversing ? "brake" : "drive");
 
     const driven = WHEELS.filter((w) => !w.front).length;
     WHEELS.forEach((w, i) => {
       // задний привод: тяга только на заднюю ось — с неё же в M3 начнётся занос
       this.controller.setWheelEngineForce(i, w.front ? 0 : engine / driven);
       this.controller.setWheelSteering(i, w.front ? this.steerAngle : 0);
-      const handbrake = input.handbrake && !w.front ? (HANDBRAKE_FORCE * dt) / driven : 0;
-      this.controller.setWheelBrake(i, baseBrake + handbrake);
+      this.controller.setWheelBrake(i, baseBrake);
     });
 
     this.controller.updateVehicle(dt);
-    this.stabilizeDrift(dt, input.handbrake);
+    this.stabilizeDrift(dt, reversing);
   }
 
   /**
@@ -298,33 +306,45 @@ export class Vehicle {
    *
    * Пока машина скользит в пределах разрешённого угла, здесь не происходит ничего —
    * занос живёт на трении шин. За потолком вектор скорости подтягивается к курсу, а
-   * рыскание гасится, так что развернуть машину полностью нельзя ни ручником, ни газом.
+   * рыскание гасится, так что развернуть машину полностью нельзя.
    *
    * Работать это должно после updateVehicle: тот уже выставил скорости шасси по колёсам,
    * и мы правим результат до того, как солвер сделает шаг.
    */
-  private stabilizeDrift(dt: number, handbrake: boolean): void {
+  private stabilizeDrift(dt: number, reversing: boolean): void {
     const lv = this.body.linvel();
     const speed = Math.hypot(lv.x, lv.z);
     if (speed < DRIFT_MIN_SPEED) return;
 
-    // Отклонение меряем от оси движения, а не от передней полуоси: на заднем ходу
-    // скорость направлена против курса, и «занос 180°» стабилизатор принял бы за срыв
-    // и погасил бы задний ход. Складываем угол в [-90°, 90°] — в игре машина за 90°
-    // и не уходит, этот потолок как раз ниже.
+    // На заднем ходу скорость направлена против курса, и «занос 180°» стабилизатор
+    // принял бы за срыв и погасил бы движение назад. Поэтому там угол складывается
+    // к задней полуоси.
+    //
+    // Но только там. Складывать по одному лишь порогу в 90° нельзя: на льду занос
+    // доходит до 80°, и стоило бы ему перевалить за 90°, как стабилизатор начал бы
+    // «дотягивать» машину к задней полуоси, то есть сам доворачивал бы её в разворот.
+    // Пока игрок не сдаёт назад, цель всегда одна — ехать носом вперёд.
     let slip = this.slipAngle;
-    if (slip > Math.PI / 2) slip -= Math.PI;
-    else if (slip < -Math.PI / 2) slip += Math.PI;
+    if (reversing) {
+      if (slip > Math.PI / 2) slip -= Math.PI;
+      else if (slip < -Math.PI / 2) slip += Math.PI;
+    }
 
     // Потолок раскрывается по фактическому углу колёс: он доводится плавно,
     // поэтому потолок разжимается и сжимается без рывка.
-    const open = handbrake ? DRIFT_MAX_ANGLE_HANDBRAKE : DRIFT_MAX_ANGLE;
-    const limit = DRIFT_IDLE_ANGLE + (open - DRIFT_IDLE_ANGLE) * this.steerFrac;
+    this.driftPermit = Math.max(this.steerFrac, this.driftPermit - DRIFT_PERMIT_DECAY * dt);
+    const limit = DRIFT_IDLE_ANGLE + (DRIFT_MAX_ANGLE - DRIFT_IDLE_ANGLE) * this.driftPermit;
     const excess = Math.abs(slip) - limit;
     if (excess <= 0) return;
 
-    // поворот вектора скорости к курсу; модуль скорости сохраняется, энергия не добавляется
-    const theta = -Math.sign(slip) * Math.min(excess, DRIFT_RECOVERY * dt);
+    // Поворот вектора скорости к курсу; модуль скорости сохраняется, энергия не
+    // добавляется. Скорость возврата растёт с глубиной срыва: у потолка стабилизатор
+    // почти незаметен, а дальше упирается стеной.
+    // Жёсткость нарастает только за настоящей стеной (DRIFT_MAX_ANGLE). Внутри неё
+    // возврат всегда мягкий, иначе сжатие потолка выщёлкивало бы машину из заноса.
+    const beyondWall = Math.max(0, Math.abs(slip) - DRIFT_MAX_ANGLE);
+    const rate = DRIFT_RECOVERY + DRIFT_RECOVERY_RAMP * beyondWall;
+    const theta = -Math.sign(slip) * Math.min(excess, rate * dt);
     const c = Math.cos(theta);
     const s = Math.sin(theta);
     this.body.setLinvel({ x: lv.x * c + lv.z * s, y: lv.y, z: lv.z * c - lv.x * s }, true);
