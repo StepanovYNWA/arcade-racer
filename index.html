@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2333383f'/%3E%3Crect x='6' y='13' width='20' height='7' rx='2' fill='%23ffc21a'/%3E%3Ccircle cx='11' cy='22' r='3' fill='%2315181c'/%3E%3Ccircle cx='21' cy='22' r='3' fill='%2315181c'/%3E%3C/svg%3E">
+<title>Arcade Racer</title>
+<style>
+  :root{
+    --accent:#ffc21a;
+    --panel:rgba(14,18,24,0.66);
+    --ink:#f3f6fa; --ink-soft:#aab4c0;
+    --sans:"Inter","Segoe UI",system-ui,-apple-system,sans-serif;
+    --mono:ui-monospace,"SF Mono","Roboto Mono","Consolas",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:#87b7e8}
+  #app{position:fixed;inset:0}
+  canvas{display:block}
+
+  .hud{position:absolute;pointer-events:none;color:var(--ink);
+       text-shadow:0 1px 3px rgba(0,0,0,.45);font-family:var(--sans)}
+
+  #debug{top:14px;left:16px;background:var(--panel);backdrop-filter:blur(6px);
+         border-radius:11px;padding:8px 13px;border:1px solid rgba(255,255,255,.08)}
+  #debug .t{font-size:12px;color:var(--ink-soft)}
+  #debug .m{font-family:var(--mono);font-size:18px;font-weight:700;margin-top:1px}
+  #debug .sub{font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin-top:3px}
+  #debug .backend{color:var(--accent);font-weight:700}
+
+  #help{bottom:20px;right:20px;text-align:right;font-size:12px;
+        color:var(--ink-soft);line-height:1.65}
+  #help .key{color:var(--accent);font-weight:700}
+
+  #fatal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+         background:#0e1218;color:#f3f6fa;font-family:var(--sans);padding:32px;text-align:center}
+  #fatal.on{display:flex}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="debug" class="hud">
+  <div class="t">M0–M1 · каркас</div>
+  <div class="m" id="dbgTrack">—</div>
+  <div class="sub">рендер: <span class="backend" id="dbgBackend">…</span> · <span id="dbgFps">—</span> fps</div>
+</div>
+
+<div id="help" class="hud">
+  <div><span class="key">1 … 5</span> — переключить трассу</div>
+  <div>физики и управления пока нет</div>
+</div>
+
+<div id="fatal"><div id="fatalMsg"></div></div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
