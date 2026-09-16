@@ -117,7 +117,7 @@ export const SIDE_FRICTION_FRONT = 0.95;
  * приходить туда, где игрок его просит, и не приходить, где не просит.
  */
 export const SIDE_FRICTION_REAR = 0.3;
-export const SIDE_FRICTION_REAR_TURN = 0.1;
+export const SIDE_FRICTION_REAR_TURN = 0.05;
 
 /** ручник роняет сцепление задней оси — тот самый управляемый срыв */
 export const HANDBRAKE_FRICTION_SLIP = 0.5;
