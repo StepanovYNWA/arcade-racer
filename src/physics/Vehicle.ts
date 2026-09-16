@@ -33,6 +33,7 @@ import {
   ROLL_RESIST_FORCE,
   SIDE_FRICTION_FRONT,
   SIDE_FRICTION_REAR,
+  SIDE_FRICTION_REAR_TURN,
   STEER_MAX,
   STEER_RATE,
   STEER_SPEED_FALLOFF,
@@ -102,6 +103,8 @@ export class Vehicle {
   private steerAngle = 0;
   private lastEngine = 0;
   private lastBrake = 0;
+  /** насколько вывернут руль от текущего максимума, 0..1 */
+  private steerFrac = 0;
   /** момент инерции шасси вокруг вертикали — нужен, чтобы гасить рыскание в физичных единицах */
   private readonly inertiaY: number;
 
@@ -196,6 +199,10 @@ export class Vehicle {
    */
   private applyGrip(mode: GripMode): void {
     const braking = mode === "brake";
+    // зад тем скользче, чем круче вывернут руль: занос приходит в резкий поворот
+    const rearSide =
+      SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_TURN - SIDE_FRICTION_REAR) * this.steerFrac;
+
     WHEELS.forEach((w, i) => {
       const rearLoose = mode === "handbrake" && !w.front;
 
@@ -207,7 +214,7 @@ export class Vehicle {
       this.controller.setWheelFrictionSlip(i, slip);
       this.controller.setWheelSideFrictionStiffness(
         i,
-        rearLoose ? HANDBRAKE_SIDE_FRICTION : w.front ? SIDE_FRICTION_FRONT : SIDE_FRICTION_REAR,
+        rearLoose ? HANDBRAKE_SIDE_FRICTION : w.front ? SIDE_FRICTION_FRONT : rearSide,
       );
     });
   }
@@ -259,9 +266,13 @@ export class Vehicle {
     const baseBrake = (brakeForce * dt) / wheelCount;
 
     // --- руль: угол доводится с конечной скоростью и урезается на скорости ---
-    const steerTarget = input.steer * STEER_MAX * (1 - STEER_SPEED_FALLOFF * speedFrac);
+    const steerRange = STEER_MAX * (1 - STEER_SPEED_FALLOFF * speedFrac);
+    const steerTarget = input.steer * steerRange;
     const maxStep = STEER_RATE * dt;
     this.steerAngle += MathUtils.clamp(steerTarget - this.steerAngle, -maxStep, maxStep);
+    // доля от текущего максимума, а не от полного STEER_MAX: угол колёс сам урезается
+    // с ростом скорости, и «до упора» должно означать «до упора» на любой скорости
+    this.steerFrac = Math.min(1, Math.abs(this.steerAngle) / Math.max(steerRange, 1e-4));
 
     this.lastEngine = engine;
     this.lastBrake = baseBrake;
@@ -305,16 +316,10 @@ export class Vehicle {
     if (slip > Math.PI / 2) slip -= Math.PI;
     else if (slip < -Math.PI / 2) slip += Math.PI;
 
-    // Берём фактический угол колёс, а не нажатие: он доводится плавно, и потолок
-    // разжимается и сжимается без рывка.
-    //
-    // Нормируем на полный STEER_MAX намеренно. Угол колёс сам урезается с ростом
-    // скорости (STEER_SPEED_FALLOFF), поэтому на максималке даже полный поворот руля
-    // открывает потолок лишь примерно вполовину: глубокий занос на 130 км/ч поймать
-    // нечем, а на медленной шпильке он доступен целиком.
-    const steerFrac = Math.min(1, Math.abs(this.steerAngle) / STEER_MAX);
+    // Потолок раскрывается по фактическому углу колёс: он доводится плавно,
+    // поэтому потолок разжимается и сжимается без рывка.
     const open = handbrake ? DRIFT_MAX_ANGLE_HANDBRAKE : DRIFT_MAX_ANGLE;
-    const limit = DRIFT_IDLE_ANGLE + (open - DRIFT_IDLE_ANGLE) * steerFrac;
+    const limit = DRIFT_IDLE_ANGLE + (open - DRIFT_IDLE_ANGLE) * this.steerFrac;
     const excess = Math.abs(slip) - limit;
     if (excess <= 0) return;
 

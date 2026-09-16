@@ -92,7 +92,7 @@ export const SUSPENSION_MAX_FORCE = 60000;
  * Занос рождается из разницы осей: зад держит слабее переда и срывается первым.
  */
 export const FRICTION_SLIP_FRONT = 2.8;
-export const FRICTION_SLIP_REAR = 1.2;
+export const FRICTION_SLIP_REAR = 1.0;
 
 /**
  * Круг трения под тормозом и на заднем ходу.
@@ -106,11 +106,22 @@ export const FRICTION_SLIP_REAR = 1.2;
 export const FRICTION_SLIP_FRONT_BRAKING = 4.2;
 export const FRICTION_SLIP_REAR_BRAKING = 3.8;
 export const SIDE_FRICTION_FRONT = 0.95;
-export const SIDE_FRICTION_REAR = 0.26;
+/**
+ * Боковая жёсткость задней оси зависит от того, насколько вывернут руль.
+ *
+ * При руле в нуле зад держит (SIDE_FRICTION_REAR) — на прямой и в плавной дуге
+ * машина не рыскает. Чем круче вывернут руль, тем ближе значение к
+ * SIDE_FRICTION_REAR_TURN, и на резком повороте зад уходит в скольжение.
+ *
+ * Физически сцепление от руля не зависит, но нам важно другое: занос должен
+ * приходить туда, где игрок его просит, и не приходить, где не просит.
+ */
+export const SIDE_FRICTION_REAR = 0.3;
+export const SIDE_FRICTION_REAR_TURN = 0.1;
 
 /** ручник роняет сцепление задней оси — тот самый управляемый срыв */
 export const HANDBRAKE_FRICTION_SLIP = 0.5;
-export const HANDBRAKE_SIDE_FRICTION = 0.12;
+export const HANDBRAKE_SIDE_FRICTION = 0.07;
 
 /**
  * Стабилизатор заноса.
@@ -123,10 +134,10 @@ export const HANDBRAKE_SIDE_FRICTION = 0.12;
  * скорость подтягивается обратно к курсу (модуль скорости при этом не меняется),
  * а вращение гасится. Малые заносы стабилизатор не трогает вовсе.
  */
-/** предельный угол заноса без ручника, рад (~35°) */
-export const DRIFT_MAX_ANGLE = 0.61;
-/** с ручником занос разрешён глубже (~46°) */
-export const DRIFT_MAX_ANGLE_HANDBRAKE = 0.8;
+/** предельный угол заноса без ручника, рад (~50°) */
+export const DRIFT_MAX_ANGLE = 0.87;
+/** с ручником занос разрешён глубже (~62°) */
+export const DRIFT_MAX_ANGLE_HANDBRAKE = 1.08;
 /** как быстро вектор скорости возвращается к курсу за потолком, рад/с */
 export const DRIFT_RECOVERY = 6.0;
 /** гашение рыскания за потолком, 1/с */
