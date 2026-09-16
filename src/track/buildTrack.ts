@@ -121,8 +121,52 @@ function scenery(path: readonly Vector3[], nrm: readonly Vector3[], rnd: Rng): G
   return g;
 }
 
+/**
+ * Проверка на самоналожение полотна (только в DEV).
+ *
+ * Две точки осевой линии, далёкие друг от друга по ходу круга, но сошедшиеся ближе
+ * ширины дороги, означают, что полотно легло само на себя. Играбельность это ломает
+ * не сразу, а вот коллайдеры-барьеры с M2 встанут поперёк соседней секции.
+ *
+ * Тесное соседство внутри одного поворота — не наложение: на шпильке осевая линия
+ * законно заворачивается на себя, и хорда между её концами короче ширины дороги.
+ * Поэтому пары ближе, чем полуокружность самого крутого возможного здесь разворота
+ * (π * fillet с запасом), из проверки исключаются — мерить нужно расстояние вдоль
+ * полотна, а не разницу индексов.
+ */
+function warnIfSelfOverlapping(def: TrackDef, path: readonly Vector3[]): void {
+  const n = path.length;
+
+  let total = 0;
+  for (let i = 0; i < n; i++) total += path[i]!.distanceTo(path[(i + 1) % n]!);
+  const spacing = total / n;
+  const skip = Math.ceil((Math.PI * def.fillet * 1.15) / spacing);
+
+  let worst = Infinity;
+  let at: [number, number] | null = null;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + skip; j < n; j++) {
+      if (n - (j - i) < skip) continue; // сомкнуться через path[0] — тоже соседство
+      const d = path[i]!.distanceTo(path[j]!);
+      if (d < worst) {
+        worst = d;
+        at = [i, j];
+      }
+    }
+  }
+
+  if (at && worst < ROAD_HW * 2) {
+    console.warn(
+      `[track] «${def.name}»: полотно накладывается само на себя — точки ${at[0]} и ${at[1]} ` +
+        `разошлись на ${worst.toFixed(1)} при ширине дороги ${ROAD_HW * 2}`,
+    );
+  }
+}
+
 export function buildTrack(def: TrackDef, seed: number): Track {
   const path = buildCenterline(def.V, def.fillet);
+  if (import.meta.env.DEV) warnIfSelfOverlapping(def, path);
+
   const { tan, nrm } = computeFrames(path);
   const curveSpeed = computeCurveSpeed(tan);
 
