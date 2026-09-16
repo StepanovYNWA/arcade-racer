@@ -10,7 +10,6 @@ import {
   DRIFT_IDLE_ANGLE,
   DRIFT_MAX_ANGLE,
   DRIFT_MIN_SPEED,
-  DRIFT_PERMIT_DECAY,
   DRIFT_RECOVERY,
   DRIFT_RECOVERY_RAMP,
   DRIFT_YAW_DAMPING,
@@ -30,8 +29,12 @@ import {
   REV_PEAK,
   ROLL_RESIST_FORCE,
   SIDE_FRICTION_FRONT,
+  SIDE_FRICTION_FRONT_TURN,
   SIDE_FRICTION_REAR,
   SIDE_FRICTION_REAR_TURN,
+  STEER_GRIP_DEADZONE,
+  STEER_GRIP_FULL,
+  STEER_SMOOTH_DECAY,
   STEER_MAX,
   STEER_RATE,
   STEER_SPEED_FALLOFF,
@@ -44,8 +47,11 @@ import {
   SUSPENSION_TRAVEL,
   TORQUE_FALLOFF,
   TORQUE_FLOOR,
+  WHEELBASE,
   WHEELS,
   WHEEL_RADIUS,
+  YAW_FOLLOW,
+  YAW_RATE_MAX,
 } from "../constants";
 import type { PlayerInput } from "../core/Input";
 
@@ -104,18 +110,17 @@ export class Vehicle {
   /**
    * Два разных «насколько вывернут руль», и путать их нельзя.
    *
-   * steerFrac — доля от текущего (урезанного скоростью) максимума. По ней поднимается
-   * потолок заноса: «до упора» должно означать «до упора» на любой скорости.
+   * Доля считается от ТЕКУЩЕГО (урезанного скоростью) максимума: «до упора» должно
+   * означать «до упора» на любой скорости.
    *
-   * steerFracAbs — доля от полного STEER_MAX. По ней падает сцепление задней оси.
-   * Считать сцепление по первой было ошибкой: на 140 км/ч максимум угла колёс вдвое
-   * меньше, и мелкая правка руля на прямой засчитывалась как полный выворот — зад
-   * срывало там, где игрок всего лишь подруливал.
+   * turnIntensity — та же доля, но с задержкой на спад. По ней падает сцепление
+   * и поднимается потолок заноса: без задержки пауза между нажатиями стрелки
+   * мгновенно возвращала сцепление и обрывала скольжение.
    */
-  private steerFrac = 0;
-  private steerFracAbs = 0;
-  /** разрешение на занос: растёт с рулём мгновенно, падает с задержкой */
-  private driftPermit = 0;
+  /** сглаженный угол колёс: доворот мгновенный, возврат с задержкой */
+  private steerSmooth = 0;
+  /** доля выворота по сглаженному углу, 0..1 */
+  private turnIntensity = 0;
   /** момент инерции шасси вокруг вертикали — нужен, чтобы гасить рыскание в физичных единицах */
   private readonly inertiaY: number;
 
@@ -210,9 +215,17 @@ export class Vehicle {
    */
   private applyGrip(mode: GripMode): void {
     const braking = mode === "brake";
-    // зад тем скользче, чем круче вывернут руль: занос приходит в резкий поворот
-    const rearSide =
-      SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_TURN - SIDE_FRICTION_REAR) * this.steerFracAbs;
+    // обе оси тем скользче, чем круче вывернут руль: в резкий поворот машина
+    // входит в скольжении целиком, а не срывает один только зад
+    // Доля выворота от текущего максимума, за вычетом мёртвой зоны: подруливание
+    // на прямой сцепление не трогает, а заметный поворот срывает обе оси.
+    const k = MathUtils.clamp(
+      (this.turnIntensity - STEER_GRIP_DEADZONE) / (STEER_GRIP_FULL - STEER_GRIP_DEADZONE),
+      0,
+      1,
+    );
+    const frontSide = SIDE_FRICTION_FRONT + (SIDE_FRICTION_FRONT_TURN - SIDE_FRICTION_FRONT) * k;
+    const rearSide = SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_TURN - SIDE_FRICTION_REAR) * k;
 
     WHEELS.forEach((w, i) => {
       const slip = w.front
@@ -224,7 +237,7 @@ export class Vehicle {
           : FRICTION_SLIP_REAR;
 
       this.controller.setWheelFrictionSlip(i, slip);
-      this.controller.setWheelSideFrictionStiffness(i, w.front ? SIDE_FRICTION_FRONT : rearSide);
+      this.controller.setWheelSideFrictionStiffness(i, w.front ? frontSide : rearSide);
     });
   }
 
@@ -281,8 +294,23 @@ export class Vehicle {
     this.steerAngle += MathUtils.clamp(steerTarget - this.steerAngle, -maxStep, maxStep);
     // доля от текущего максимума, а не от полного STEER_MAX: угол колёс сам урезается
     // с ростом скорости, и «до упора» должно означать «до упора» на любой скорости
-    this.steerFrac = Math.min(1, Math.abs(this.steerAngle) / Math.max(steerRange, 1e-4));
-    this.steerFracAbs = Math.min(1, Math.abs(this.steerAngle) / STEER_MAX);
+    // Сглаженный руль: доворот повторяем мгновенно, возврат тянем с задержкой.
+    // От него зависит всё скольжение сразу, поэтому пауза между нажатиями стрелки
+    // больше не обрывает занос — ни по сцеплению, ни по удержанию курса.
+    // Осторожно со знаком: при отпущенной стрелке угол ровно ноль, и проверка
+    // «знак сменился» сработала бы на sign(0) = 0, обнуляя сглаживание ровно там,
+    // где оно и нужно. Переворот засчитываем только при двух ненулевых знаках.
+    const flipped =
+      this.steerAngle !== 0 &&
+      this.steerSmooth !== 0 &&
+      Math.sign(this.steerAngle) !== Math.sign(this.steerSmooth);
+    if (Math.abs(this.steerAngle) >= Math.abs(this.steerSmooth) || flipped) {
+      this.steerSmooth = this.steerAngle;
+    } else {
+      const decay = STEER_SMOOTH_DECAY * dt;
+      this.steerSmooth -= Math.sign(this.steerSmooth) * Math.min(decay, Math.abs(this.steerSmooth));
+    }
+    this.turnIntensity = Math.min(1, Math.abs(this.steerSmooth) / Math.max(steerRange, 1e-4));
 
     this.lastEngine = engine;
     this.lastBrake = baseBrake;
@@ -298,7 +326,32 @@ export class Vehicle {
     });
 
     this.controller.updateVehicle(dt);
+    this.holdHeading(dt);
     this.stabilizeDrift(dt, reversing);
+  }
+
+  /**
+   * Удержание курса.
+   *
+   * Машина доворачивается ровно настолько, насколько велит геометрия руля, а лишнее
+   * вращение гасится. Это и превращает скольжение в боковой дрифт: без удержания
+   * низкое боковое сцепление означает «машину крутит вокруг себя», с ним — «машина
+   * едет боком, оставаясь носом туда, куда рулишь».
+   *
+   * Боковую скорость здесь не трогаем совсем — гасится только вращение, поэтому
+   * скольжение вбок остаётся полностью во власти шин.
+   */
+  private holdHeading(dt: number): void {
+    const lv = this.body.linvel();
+    if (Math.hypot(lv.x, lv.z) < DRIFT_MIN_SPEED) return;
+
+    // Велосипедная модель даёт темп доворота по геометрии руля, но на полном вывороте
+    // это почти 180°/с — разворот на месте. Потолок и превращает поворот в скольжение:
+    // корпус доворачивается медленно, а машину несёт по дуге шире геометрической.
+    const kinematic = (this.speed * Math.tan(this.steerSmooth)) / WHEELBASE;
+    const expected = MathUtils.clamp(kinematic, -YAW_RATE_MAX, YAW_RATE_MAX);
+    const excess = this.body.angvel().y - expected;
+    this.body.applyTorqueImpulse({ x: 0, y: -excess * YAW_FOLLOW * this.inertiaY * dt, z: 0 }, true);
   }
 
   /**
@@ -332,8 +385,7 @@ export class Vehicle {
 
     // Потолок раскрывается по фактическому углу колёс: он доводится плавно,
     // поэтому потолок разжимается и сжимается без рывка.
-    this.driftPermit = Math.max(this.steerFrac, this.driftPermit - DRIFT_PERMIT_DECAY * dt);
-    const limit = DRIFT_IDLE_ANGLE + (DRIFT_MAX_ANGLE - DRIFT_IDLE_ANGLE) * this.driftPermit;
+    const limit = DRIFT_IDLE_ANGLE + (DRIFT_MAX_ANGLE - DRIFT_IDLE_ANGLE) * this.turnIntensity;
     const excess = Math.abs(slip) - limit;
     if (excess <= 0) return;
 
