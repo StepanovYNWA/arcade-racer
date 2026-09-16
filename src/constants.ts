@@ -135,7 +135,7 @@ export const HANDBRAKE_SIDE_FRICTION = 0.07;
  * а вращение гасится. Малые заносы стабилизатор не трогает вовсе.
  */
 /** предельный угол заноса без ручника, рад (~50°) */
-export const DRIFT_MAX_ANGLE = 0.87;
+export const DRIFT_MAX_ANGLE = 1.07;
 /** с ручником занос разрешён глубже (~62°) */
 export const DRIFT_MAX_ANGLE_HANDBRAKE = 1.08;
 /** как быстро вектор скорости возвращается к курсу за потолком, рад/с */
