@@ -131,7 +131,7 @@ async function main(): Promise<void> {
         pivot.rotation.x = v.wheelRotation(i);
       });
 
-      debug.setDrive(v.speed, v.revsNorm);
+      debug.setDrive(v.speed, v.revsNorm, v.slipAngle);
       physicsDebug?.update();
       renderer.render(scene, camera);
     },

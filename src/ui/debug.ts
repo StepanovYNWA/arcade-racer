@@ -2,6 +2,8 @@ import { MAXSPEED, REV_MAX, REV_PEAK } from "../constants";
 
 /** насколько близко к пику момента обороты считаются «в такт» */
 const PEAK_WINDOW = 0.15;
+/** с какого угла занос считается заносом и подсвечивается */
+const DRIFT_VISIBLE_DEG = 8;
 
 /**
  * Панель каркаса: трасса, бэкенд, fps — и спидометр со шкалой оборотов.
@@ -16,10 +18,18 @@ export class DebugPanel {
   private readonly spdEl = document.getElementById("spd")!;
   private readonly spdFill = document.getElementById("spdfill")! as HTMLElement;
   private readonly powFill = document.getElementById("powfill")! as HTMLElement;
+  private readonly slipEl = document.getElementById("slip")! as HTMLElement;
   private fpsNextUpdate = 0;
 
-  /** speed — м/с, revsNorm — обороты в долях пика момента (1.0 = идеальный ритм) */
-  setDrive(speed: number, revsNorm: number): void {
+  /**
+   * speed — м/с, revsNorm — обороты в долях пика момента (1.0 = идеальный ритм),
+   * slipRad — угол заноса
+   */
+  setDrive(speed: number, revsNorm: number, slipRad: number): void {
+    const slipDeg = Math.round(Math.abs((slipRad * 180) / Math.PI));
+    this.slipEl.textContent = `${slipDeg}°`;
+    this.slipEl.classList.toggle("on", slipDeg >= DRIFT_VISIBLE_DEG);
+
     this.spdEl.textContent = String(Math.max(0, Math.round(Math.abs(speed) * 3.6)));
     this.spdFill.style.width = `${Math.min(Math.abs(speed) / MAXSPEED, 1) * 100}%`;
 

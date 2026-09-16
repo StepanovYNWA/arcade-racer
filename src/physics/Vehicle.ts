@@ -7,10 +7,20 @@ import {
   CAR_MASS,
   CHASSIS_HALF,
   CHASSIS_Y,
+  DRIFT_IDLE_ANGLE,
+  DRIFT_MAX_ANGLE,
+  DRIFT_MAX_ANGLE_HANDBRAKE,
+  DRIFT_MIN_SPEED,
+  DRIFT_RECOVERY,
+  DRIFT_YAW_DAMPING,
   ENGINE_FORCE_MAX,
   ENGINE_SPEED_FALLOFF,
   FRICTION_SLIP_FRONT,
+  FRICTION_SLIP_FRONT_BRAKING,
   FRICTION_SLIP_REAR,
+  FRICTION_SLIP_REAR_BRAKING,
+  HANDBRAKE_FRICTION_SLIP,
+  HANDBRAKE_SIDE_FRICTION,
   HANDBRAKE_FORCE,
   LINEAR_DAMPING,
   MAXSPEED,
@@ -47,6 +57,9 @@ export interface Spawn {
   /** курс в тех же единицах, что и mesh.rotation.y */
   heading: number;
 }
+
+/** Режим сцепления: под тормозом оси цепляются, ручник срывает заднюю. */
+type GripMode = "drive" | "brake" | "handbrake";
 
 /** Ниже этой скорости «тормоз» означает «сдать назад», как в прототипе. */
 const REVERSE_THRESHOLD = 0.5;
@@ -89,6 +102,8 @@ export class Vehicle {
   private steerAngle = 0;
   private lastEngine = 0;
   private lastBrake = 0;
+  /** момент инерции шасси вокруг вертикали — нужен, чтобы гасить рыскание в физичных единицах */
+  private readonly inertiaY: number;
 
   // состояние для интерполяции рендера между физическими тиками
   private readonly prevPos = new Vector3();
@@ -133,15 +148,16 @@ export class Vehicle {
       );
     }
 
-    WHEELS.forEach((w, i) => {
+    WHEELS.forEach((_, i) => {
       this.controller.setWheelSuspensionStiffness(i, SUSPENSION_STIFFNESS);
       this.controller.setWheelSuspensionCompression(i, SUSPENSION_COMPRESSION);
       this.controller.setWheelSuspensionRelaxation(i, SUSPENSION_RELAXATION);
       this.controller.setWheelMaxSuspensionTravel(i, SUSPENSION_TRAVEL);
       this.controller.setWheelMaxSuspensionForce(i, SUSPENSION_MAX_FORCE);
-      this.controller.setWheelFrictionSlip(i, w.front ? FRICTION_SLIP_FRONT : FRICTION_SLIP_REAR);
-      this.controller.setWheelSideFrictionStiffness(i, w.front ? SIDE_FRICTION_FRONT : SIDE_FRICTION_REAR);
     });
+    this.applyGrip("drive");
+
+    this.inertiaY = this.body.principalInertia().y;
 
     this.readTransform(this.currPos, this.currRot);
     this.prevPos.copy(this.currPos);
@@ -156,6 +172,44 @@ export class Vehicle {
   /** Обороты, нормированные к пику момента: 1.0 — идеальный ритм нажатий. */
   get revsNorm(): number {
     return this.revs / REV_PEAK;
+  }
+
+  /**
+   * Угол заноса: между тем, куда смотрит машина, и тем, куда она едет, рад.
+   * Ноль — едет ровно, растёт при скольжении. Нужен и для HUD, и для антизаноса ИИ в M5.
+   */
+  get slipAngle(): number {
+    const lv = this.body.linvel();
+    const speed = Math.hypot(lv.x, lv.z);
+    if (speed < 1) return 0;
+    const q = this.body.rotation();
+    const yaw = 2 * Math.atan2(q.y, q.w);
+    let a = Math.atan2(lv.x, lv.z) - yaw;
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  }
+
+  /**
+   * Сцепление колёс. Ручник роняет заднюю ось: и круг трения, и боковую жёсткость.
+   * Отпустил — сцепление возвращается тем же тиком, машина цепляется и выходит из заноса.
+   */
+  private applyGrip(mode: GripMode): void {
+    const braking = mode === "brake";
+    WHEELS.forEach((w, i) => {
+      const rearLoose = mode === "handbrake" && !w.front;
+
+      let slip: number;
+      if (rearLoose) slip = HANDBRAKE_FRICTION_SLIP;
+      else if (w.front) slip = braking ? FRICTION_SLIP_FRONT_BRAKING : FRICTION_SLIP_FRONT;
+      else slip = braking ? FRICTION_SLIP_REAR_BRAKING : FRICTION_SLIP_REAR;
+
+      this.controller.setWheelFrictionSlip(i, slip);
+      this.controller.setWheelSideFrictionStiffness(
+        i,
+        rearLoose ? HANDBRAKE_SIDE_FRICTION : w.front ? SIDE_FRICTION_FRONT : SIDE_FRICTION_REAR,
+      );
+    });
   }
 
   /** Сколько колёс сейчас касается земли — нужно и для HUD, и для антизаноса в M5. */
@@ -212,6 +266,9 @@ export class Vehicle {
     this.lastEngine = engine;
     this.lastBrake = baseBrake;
 
+    // ручник важнее тормоза: он и задуман как срыв задней оси
+    this.applyGrip(input.handbrake ? "handbrake" : braking || reversing ? "brake" : "drive");
+
     const driven = WHEELS.filter((w) => !w.front).length;
     WHEELS.forEach((w, i) => {
       // задний привод: тяга только на заднюю ось — с неё же в M3 начнётся занос
@@ -222,6 +279,53 @@ export class Vehicle {
     });
 
     this.controller.updateVehicle(dt);
+    this.stabilizeDrift(dt, input.handbrake);
+  }
+
+  /**
+   * Потолок на занос.
+   *
+   * Пока машина скользит в пределах разрешённого угла, здесь не происходит ничего —
+   * занос живёт на трении шин. За потолком вектор скорости подтягивается к курсу, а
+   * рыскание гасится, так что развернуть машину полностью нельзя ни ручником, ни газом.
+   *
+   * Работать это должно после updateVehicle: тот уже выставил скорости шасси по колёсам,
+   * и мы правим результат до того, как солвер сделает шаг.
+   */
+  private stabilizeDrift(dt: number, handbrake: boolean): void {
+    const lv = this.body.linvel();
+    const speed = Math.hypot(lv.x, lv.z);
+    if (speed < DRIFT_MIN_SPEED) return;
+
+    // Отклонение меряем от оси движения, а не от передней полуоси: на заднем ходу
+    // скорость направлена против курса, и «занос 180°» стабилизатор принял бы за срыв
+    // и погасил бы задний ход. Складываем угол в [-90°, 90°] — в игре машина за 90°
+    // и не уходит, этот потолок как раз ниже.
+    let slip = this.slipAngle;
+    if (slip > Math.PI / 2) slip -= Math.PI;
+    else if (slip < -Math.PI / 2) slip += Math.PI;
+
+    // Берём фактический угол колёс, а не нажатие: он доводится плавно, и потолок
+    // разжимается и сжимается без рывка.
+    //
+    // Нормируем на полный STEER_MAX намеренно. Угол колёс сам урезается с ростом
+    // скорости (STEER_SPEED_FALLOFF), поэтому на максималке даже полный поворот руля
+    // открывает потолок лишь примерно вполовину: глубокий занос на 130 км/ч поймать
+    // нечем, а на медленной шпильке он доступен целиком.
+    const steerFrac = Math.min(1, Math.abs(this.steerAngle) / STEER_MAX);
+    const open = handbrake ? DRIFT_MAX_ANGLE_HANDBRAKE : DRIFT_MAX_ANGLE;
+    const limit = DRIFT_IDLE_ANGLE + (open - DRIFT_IDLE_ANGLE) * steerFrac;
+    const excess = Math.abs(slip) - limit;
+    if (excess <= 0) return;
+
+    // поворот вектора скорости к курсу; модуль скорости сохраняется, энергия не добавляется
+    const theta = -Math.sign(slip) * Math.min(excess, DRIFT_RECOVERY * dt);
+    const c = Math.cos(theta);
+    const s = Math.sin(theta);
+    this.body.setLinvel({ x: lv.x * c + lv.z * s, y: lv.y, z: lv.z * c - lv.x * s }, true);
+
+    const av = this.body.angvel();
+    this.body.applyTorqueImpulse({ x: 0, y: -av.y * DRIFT_YAW_DAMPING * this.inertiaY * dt, z: 0 }, true);
   }
 
   /** Снять трансформ после world.step(). */
@@ -271,6 +375,9 @@ export class Vehicle {
     side: number[];
     suspension: number[];
     contact: boolean[];
+    frictionSlip: number[];
+    sideFriction: number[];
+    skid: number[];
   } {
     const idx = WHEELS.map((_, i) => i);
     return {
@@ -282,6 +389,9 @@ export class Vehicle {
       side: idx.map((i) => this.controller.wheelSideImpulse(i) ?? 0),
       suspension: idx.map((i) => this.controller.wheelSuspensionForce(i) ?? 0),
       contact: idx.map((i) => this.controller.wheelIsInContact(i)),
+      frictionSlip: idx.map((i) => this.controller.wheelFrictionSlip(i) ?? 0),
+      sideFriction: idx.map((i) => this.controller.wheelSideFrictionStiffness(i) ?? 0),
+      skid: idx.map((i) => this.controller.wheelSideImpulse(i) ?? 0),
     };
   }
 
