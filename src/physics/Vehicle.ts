@@ -9,6 +9,7 @@ import {
   CHASSIS_Y,
   DRIFT_IDLE_ANGLE,
   DRIFT_COAST_TIME,
+  DRIFT_ENGINE_BOOST,
   DRIFT_HOLD_RAMP,
   DRIFT_HOLD_TIME,
   DRIFT_MAX_ANGLE,
@@ -47,6 +48,7 @@ import {
   SUSPENSION_RELAXATION,
   SUSPENSION_REST,
   SUSPENSION_STIFFNESS,
+  TRAVEL_DIR_THRESHOLD,
   TURN_RATE,
   TURN_RATE_SPEED_DAMP,
   SUSPENSION_TRAVEL,
@@ -126,6 +128,8 @@ export class Vehicle {
   private driftFactor = 0;
   /** сколько секунд идёт инерционный выбег после отпускания руля */
   private coast = 0;
+  /** едет ли машина задом — состояние с гистерезисом, а не мгновенный признак */
+  private goingBackward = false;
   /** момент инерции шасси вокруг вертикали — нужен, чтобы гасить рыскание в физичных единицах */
   private readonly inertiaY: number;
 
@@ -288,7 +292,11 @@ export class Vehicle {
     if (reversing) {
       engine = speed > -MAX_REV ? -REVERSE_FORCE * input.brake : 0;
     } else if (!braking && speed < MAXSPEED) {
-      engine = ENGINE_FORCE_MAX * torqueCurve(this.revs) * (1 - ENGINE_SPEED_FALLOFF * speedFrac);
+      engine =
+        ENGINE_FORCE_MAX *
+        torqueCurve(this.revs) *
+        (1 - ENGINE_SPEED_FALLOFF * speedFrac) *
+        (1 + DRIFT_ENGINE_BOOST * this.driftFactor);
     }
     // Тяга на тормозе обнуляется не для красоты: Rapier игнорирует тормоз на колесе,
     // у которого ненулевая тяга, поэтому иначе задняя ось на тормозе просто не тормозит.
@@ -354,7 +362,7 @@ export class Vehicle {
 
     this.controller.updateVehicle(dt);
     this.holdHeading(dt);
-    this.stabilizeDrift(dt, reversing);
+    this.stabilizeDrift(dt);
   }
 
   /**
@@ -405,7 +413,7 @@ export class Vehicle {
    * Работать это должно после updateVehicle: тот уже выставил скорости шасси по колёсам,
    * и мы правим результат до того, как солвер сделает шаг.
    */
-  private stabilizeDrift(dt: number, reversing: boolean): void {
+  private stabilizeDrift(dt: number): void {
     const lv = this.body.linvel();
     const speed = Math.hypot(lv.x, lv.z);
     if (speed < DRIFT_MIN_SPEED) return;
@@ -414,15 +422,15 @@ export class Vehicle {
     // принял бы за срыв и погасил бы движение назад. Поэтому там угол складывается
     // к задней полуоси.
     //
-    // Но только там. Складывать по одному лишь порогу в 90° нельзя: на льду занос
-    // доходит до 80°, и стоило бы ему перевалить за 90°, как стабилизатор начал бы
-    // «дотягивать» машину к задней полуоси, то есть сам доворачивал бы её в разворот.
-    // Пока игрок не сдаёт назад, цель всегда одна — ехать носом вперёд.
+    // Решает не кнопка и не мгновенный угол, а состояние с гистерезисом: оно меняется
+    // только когда машина действительно поехала в другую сторону. По кнопке цель
+    // прыгала в момент отпускания заднего хода, по порогу угла — в момент его
+    // пересечения; и то и другое рвало вектор скорости.
+    if (this.speed > TRAVEL_DIR_THRESHOLD) this.goingBackward = false;
+    else if (this.speed < -TRAVEL_DIR_THRESHOLD) this.goingBackward = true;
+
     let slip = this.slipAngle;
-    if (reversing) {
-      if (slip > Math.PI / 2) slip -= Math.PI;
-      else if (slip < -Math.PI / 2) slip += Math.PI;
-    }
+    if (this.goingBackward) slip -= Math.sign(slip) * Math.PI;
 
     // Возврат вектора скорости к курсу работает ВСЕГДА, а не только за потолком:
     // боковое скольжение постепенно переходит в движение по курсу, поэтому занос
@@ -530,6 +538,11 @@ export class Vehicle {
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.revs = 0;
     this.steerAngle = 0;
+    this.driftFactor = 0;
+    this.coast = 0;
+    this.steerHold = 0;
+    this.steerHoldDir = 0;
+    this.goingBackward = false;
 
     this.readTransform(this.currPos, this.currRot);
     this.prevPos.copy(this.currPos);
