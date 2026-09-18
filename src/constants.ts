@@ -137,7 +137,7 @@ export const SIDE_FRICTION_FRONT_TURN = 0.05;
  * приходить туда, где игрок его просит, и не приходить, где не просит.
  */
 export const SIDE_FRICTION_REAR = 0.7;
-export const SIDE_FRICTION_REAR_TURN = 0.5;
+export const SIDE_FRICTION_REAR_TURN = 1.5;
 
 /**
  * Стабилизатор заноса.
