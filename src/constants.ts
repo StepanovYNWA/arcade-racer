@@ -191,7 +191,7 @@ export const DRIFT_RELEASE_RATE = 3.5;
  * бесконечно и машина едет не только вбок, но и вперёд.
  */
 export const GRIP_ALIGN_RATE = 2.2;
-export const GRIP_ALIGN_DRIFT = 0.99;
+export const GRIP_ALIGN_DRIFT = 0.001;
 /** ниже этой скорости стабилизатор молчит */
 export const DRIFT_MIN_SPEED = 2;
 
