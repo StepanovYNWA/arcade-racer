@@ -8,6 +8,7 @@ import {
   CHASSIS_HALF,
   CHASSIS_Y,
   DRIFT_IDLE_ANGLE,
+  DRIFT_COAST_TIME,
   DRIFT_HOLD_RAMP,
   DRIFT_HOLD_TIME,
   DRIFT_MAX_ANGLE,
@@ -55,6 +56,7 @@ import {
   WHEELS,
   WHEEL_RADIUS,
   YAW_FOLLOW,
+  YAW_RELEASE_RELIEF,
   YAW_RATE_MAX,
 } from "../constants";
 import type { PlayerInput } from "../core/Input";
@@ -122,6 +124,8 @@ export class Vehicle {
   private steerHoldDir = 0;
   /** глубина срыва, 0..1: 0 — машина цепляется и слушается руля, 1 — полный занос */
   private driftFactor = 0;
+  /** сколько секунд идёт инерционный выбег после отпускания руля */
+  private coast = 0;
   /** момент инерции шасси вокруг вертикали — нужен, чтобы гасить рыскание в физичных единицах */
   private readonly inertiaY: number;
 
@@ -203,6 +207,11 @@ export class Vehicle {
   /** Обороты, нормированные к пику момента: 1.0 — идеальный ритм нажатий. */
   get revsNorm(): number {
     return this.revs / REV_PEAK;
+  }
+
+  /** Глубина срыва, 0..1: 0 — машина цепляется, 1 — полный занос. */
+  get drift(): number {
+    return this.driftFactor;
   }
 
   /**
@@ -315,10 +324,20 @@ export class Vehicle {
     }
     const wanted =
       dir === 0 ? 0 : MathUtils.clamp((this.steerHold - DRIFT_HOLD_TIME) / DRIFT_HOLD_RAMP, 0, 1);
-    this.driftFactor =
-      wanted > this.driftFactor
-        ? wanted
-        : Math.max(wanted, this.driftFactor - DRIFT_RELEASE_RATE * dt);
+    if (dir !== 0) {
+      // руль держат — выбег не идёт, иначе пауза израсходовалась бы вхолостую
+      // ещё до отпускания, и заносить перестало бы прямо в повороте
+      this.coast = 0;
+      this.driftFactor =
+        wanted > this.driftFactor
+          ? wanted
+          : Math.max(wanted, this.driftFactor - DRIFT_RELEASE_RATE * dt);
+    } else if (this.coast < DRIFT_COAST_TIME) {
+      // выбег: машина по инерции доезжает боком, сцепление ещё не вернулось
+      this.coast += dt;
+    } else {
+      this.driftFactor = Math.max(0, this.driftFactor - DRIFT_RELEASE_RATE * dt);
+    }
 
     this.lastEngine = engine;
     this.lastBrake = baseBrake;
@@ -366,8 +385,14 @@ export class Vehicle {
     // в заносе — жёсткий потолок, он и превращает поворот в скольжение
     const capped = MathUtils.clamp(kinematic, -YAW_RATE_MAX, YAW_RATE_MAX);
     const expected = gripped + (capped - gripped) * this.driftFactor;
+    // На отпущенном руле хватка ослабевает тем сильнее, чем глубже срыв: корпус
+    // доворачивается по инерции, и занос не стирается в тот же миг, когда отпустил стрелку.
+    const relief = this.steerHoldDir === 0 ? 1 - YAW_RELEASE_RELIEF * this.driftFactor : 1;
     const excess = this.body.angvel().y - expected;
-    this.body.applyTorqueImpulse({ x: 0, y: -excess * YAW_FOLLOW * this.inertiaY * dt, z: 0 }, true);
+    this.body.applyTorqueImpulse(
+      { x: 0, y: -excess * YAW_FOLLOW * relief * this.inertiaY * dt, z: 0 },
+      true,
+    );
   }
 
   /**
