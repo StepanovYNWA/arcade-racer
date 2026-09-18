@@ -139,8 +139,17 @@ export class Vehicle {
   private readonly prevRot = new Quaternion();
   private readonly currRot = new Quaternion();
 
-  constructor(physics: PhysicsWorld, spawn: Spawn) {
+  /**
+   * Потолок скорости именно этой машины. У игрока это MAXSPEED, у соперников ниже —
+   * тем же приёмом, что в прототипе (AI_MAXBASE), иначе гонку не выиграть.
+   * На управляемость не влияет: всё остальное по-прежнему нормируется на MAXSPEED,
+   * то есть руль, занос и падение тяги у всех одинаковые.
+   */
+  private readonly topSpeed: number;
+
+  constructor(physics: PhysicsWorld, spawn: Spawn, topSpeed: number = MAXSPEED) {
     this.world = physics.world;
+    this.topSpeed = topSpeed;
 
     const rot = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), spawn.heading);
     const desc = RAPIER.RigidBodyDesc.dynamic()
@@ -206,6 +215,33 @@ export class Vehicle {
   /** Продольная скорость вдоль курса, м/с (со знаком). */
   get speed(): number {
     return this.controller.currentVehicleSpeed();
+  }
+
+  /**
+   * Курс, рад, в тех же единицах, что heading стартовой сетки: atan2(x, z).
+   *
+   * Считается через повёрнутый вектор «вперёд», а не через 2*atan2(qy, qw): на кренах
+   * и клевках второе врёт, а ИИ целится именно по курсу и ошибку бы отрабатывал.
+   */
+  get heading(): number {
+    const q = this.body.rotation();
+    // поворот (0,0,1) кватернионом, развёрнутый в скаляры
+    const x = 2 * (q.x * q.z + q.w * q.y);
+    const z = 1 - 2 * (q.x * q.x + q.y * q.y);
+    return Math.atan2(x, z);
+  }
+
+  /**
+   * Скорость рыскания, рад/с — та же величина, что производная heading по времени.
+   * Нужна ИИ: по ней он отпускает руль заранее, а не когда нос уже пролетел цель.
+   */
+  get yawRate(): number {
+    return this.body.angvel().y;
+  }
+
+  /** Положение шасси на текущем тике. Ссылка на внутренний вектор — не хранить. */
+  get position(): Readonly<Vector3> {
+    return this.currPos;
   }
 
   /** Обороты, нормированные к пику момента: 1.0 — идеальный ритм нажатий. */
@@ -291,7 +327,7 @@ export class Vehicle {
     let engine = 0;
     if (reversing) {
       engine = speed > -MAX_REV ? -REVERSE_FORCE * input.brake : 0;
-    } else if (!braking && speed < MAXSPEED) {
+    } else if (!braking && speed < this.topSpeed) {
       engine =
         ENGINE_FORCE_MAX *
         torqueCurve(this.revs) *

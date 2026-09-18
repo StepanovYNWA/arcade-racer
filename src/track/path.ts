@@ -3,7 +3,7 @@
 // библиотеки, и instanceof/классы перестанут совпадать.
 import { MathUtils, Vector3 } from "three/webgpu";
 
-import { AI_MAXBASE, N } from "../constants";
+import { AI_MAXBASE, CURVE_SPEED_MIN, N } from "../constants";
 
 /**
  * Геометрия осевой линии трассы. Прямой порт roundedPath/resampleClosed из прототипа:
@@ -161,7 +161,7 @@ export function computeCurveSpeed(tan: readonly Vector3[]): number[] {
     const a = tan[(i - 3 + n) % n]!;
     const b = tan[(i + 3) % n]!;
     const turn = Math.acos(MathUtils.clamp(a.dot(b), -1, 1));
-    out[i] = MathUtils.clamp(AI_MAXBASE - turn * 46, 12, AI_MAXBASE);
+    out[i] = MathUtils.clamp(AI_MAXBASE - turn * 46, CURVE_SPEED_MIN, AI_MAXBASE);
   }
   return out;
 }

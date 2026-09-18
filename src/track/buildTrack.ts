@@ -31,6 +31,8 @@ export interface Track {
   readonly nrm: Vector3[];
   /** целевая скорость ИИ по кривизне (M5) */
   readonly curveSpeed: number[];
+  /** длина круга по осевой линии, м */
+  readonly length: number;
 }
 
 /**
@@ -170,6 +172,9 @@ export function buildTrack(def: TrackDef, seed: number): Track {
   const { tan, nrm } = computeFrames(path);
   const curveSpeed = computeCurveSpeed(tan);
 
+  let length = 0;
+  for (let i = 0; i < N; i++) length += path[i]!.distanceTo(path[(i + 1) % N]!);
+
   const group = new Group();
   group.name = `track:${def.name}`;
 
@@ -180,7 +185,7 @@ export function buildTrack(def: TrackDef, seed: number): Track {
   group.add(startLine(path, tan, nrm));
   group.add(scenery(path, nrm, makeRng(seed)));
 
-  return { def, group, path, tan, nrm, curveSpeed };
+  return { def, group, path, tan, nrm, curveSpeed, length };
 }
 
 /** Освободить геометрию трассы. Материалы общие и кэшированные — их не трогаем. */

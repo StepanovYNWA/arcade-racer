@@ -1,6 +1,6 @@
 import { Vector3 } from "three/webgpu";
 
-import { N } from "../constants";
+import { GRID_LANE, GRID_ROW_GAP, GRID_START_GAP, N } from "../constants";
 import type { Track } from "../track/buildTrack";
 
 export interface GridSlot {
@@ -10,21 +10,33 @@ export interface GridSlot {
 }
 
 /**
- * Место на стартовой сетке. Порт placeGrid из прототипа:
- * сетка отступает от линии старта назад, машины стоят в шахматном порядке
- * через 3.4 по ширине и через 6 по длине.
+ * Место на стартовой сетке. Порт placeGrid из прототипа: сетка отступает от линии
+ * старта назад, машины стоят в шахматном порядке через GRID_LANE по ширине
+ * и через GRID_ROW_GAP по длине.
+ *
+ * Отличие от прототипа одно, и оно обязательное: назад отступаем ПО ОСЕВОЙ ЛИНИИ,
+ * а не по прямой вдоль касательной. В прототипе прямой отступ сходил с рук, потому
+ * что стен не существовало и неудачно поставленная машина просто выезжала на полотно.
+ * Здесь барьеры настоящие: на «Серпантине» трасса успевает завернуть на тех самых
+ * двух десятках метров, и машина из второго ряда оказывалась замурованной ЗА барьером,
+ * где и стояла неподвижно всю гонку.
  */
 export function gridSlot(track: Track, position: number): GridSlot {
-  const s = N - 6;
-  const base = track.path[s]!;
-  const nn = track.nrm[s]!;
-  const t = track.tan[s]!;
+  let i = N - GRID_START_GAP;
+  let back = GRID_ROW_GAP + position * GRID_ROW_GAP;
+  while (back > 0) {
+    const prev = (i - 1 + N) % N;
+    back -= track.path[i]!.distanceTo(track.path[prev]!);
+    i = prev;
+  }
 
-  const lane = ((position % 2) * 2 - 1) * 3.4;
-  const back = 6 + position * 6;
+  const base = track.path[i]!;
+  const nn = track.nrm[i]!;
+  const t = track.tan[i]!;
+  const lane = ((position % 2) * 2 - 1) * GRID_LANE;
 
   return {
-    position: new Vector3(base.x + nn.x * lane - t.x * back, 0, base.z + nn.z * lane - t.z * back),
+    position: new Vector3(base.x + nn.x * lane, 0, base.z + nn.z * lane),
     heading: Math.atan2(t.x, t.z),
   };
 }

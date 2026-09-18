@@ -1,4 +1,5 @@
-import { MAXSPEED, REV_MAX, REV_PEAK } from "../constants";
+import { MAXSPEED, N, REV_MAX, REV_PEAK } from "../constants";
+import type { Racer } from "../game/Racer";
 
 /** насколько близко к пику момента обороты считаются «в такт» */
 const PEAK_WINDOW = 0.15;
@@ -19,7 +20,10 @@ export class DebugPanel {
   private readonly spdFill = document.getElementById("spdfill")! as HTMLElement;
   private readonly powFill = document.getElementById("powfill")! as HTMLElement;
   private readonly slipEl = document.getElementById("slip")! as HTMLElement;
+  private readonly orderEl = document.getElementById("dbgOrder")!;
   private fpsNextUpdate = 0;
+  /** прошлая разметка порядка: трогать DOM каждый кадр незачем */
+  private orderHtml = "";
 
   /**
    * speed — м/с, revsNorm — обороты в долях пика момента (1.0 = идеальный ритм),
@@ -36,6 +40,36 @@ export class DebugPanel {
     const revs = revsNorm * REV_PEAK;
     this.powFill.style.width = `${Math.min(revs / REV_MAX, 1) * 100}%`;
     this.powFill.classList.toggle("peak", Math.abs(revsNorm - 1) < PEAK_WINDOW);
+  }
+
+  /**
+   * Порядок участников по сквозному прогрессу — временный заменитель плашек M6.
+   * Без него работу ИИ видно только глазами по экрану, а этого мало.
+   *
+   * Отставание считается в точках осевой линии и переводится в метры по её шагу:
+   * настоящий разрыв по времени появится вместе с правилами.
+   */
+  setOrder(racers: readonly Racer[], lapLength: number): void {
+    if (racers.length === 0) return;
+    const sorted = [...racers].sort((a, b) => b.progress.progress - a.progress.progress);
+    const lead = sorted[0]!.progress.progress;
+    const step = lapLength / N;
+
+    const rows = sorted.map((r, i) => {
+      const behind = (lead - r.progress.progress) * step;
+      const gap = i === 0 ? "лидер" : `−${behind.toFixed(0)} м`;
+      const color = `#${r.color.toString(16).padStart(6, "0")}`;
+      return (
+        `<div class="row"><span class="dot" style="background:${color}"></span>` +
+        `<span class="who">${r.name}</span><span class="gap">${gap}</span></div>`
+      );
+    });
+
+    const html = rows.join("");
+    if (html !== this.orderHtml) {
+      this.orderHtml = html;
+      this.orderEl.innerHTML = html;
+    }
   }
 
   setBackend(name: string): void {

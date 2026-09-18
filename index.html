@@ -42,6 +42,11 @@
   #powfill{height:100%;width:0%;background:linear-gradient(90deg,#3b82f6,#60d5ff);
            border-radius:4px;transition:width .05s linear}
   #powfill.peak{background:linear-gradient(90deg,#2f9e63,var(--good))}
+  #dbgOrder{margin-top:10px;font-family:var(--mono);font-size:12px;line-height:1.6}
+  #dbgOrder .row{display:flex;align-items:center;gap:6px;white-space:nowrap}
+  #dbgOrder .dot{width:8px;height:8px;border-radius:2px;flex:none}
+  #dbgOrder .who{min-width:44px}
+  #dbgOrder .gap{color:var(--ink-soft)}
   #slip{font-family:var(--mono);color:var(--ink-soft)}
   #slip.on{color:var(--accent)}
   /* отметка идеального ритма: пик момента стоит ровно на середине шкалы оборотов */
@@ -62,9 +67,10 @@
 <div id="app"></div>
 
 <div id="debug" class="hud">
-  <div class="t">M0–M1 · каркас</div>
+  <div class="t">M5 · соперники</div>
   <div class="m" id="dbgTrack">—</div>
   <div class="sub">рендер: <span class="backend" id="dbgBackend">…</span> · <span id="dbgFps">—</span> fps</div>
+  <div id="dbgOrder"></div>
 </div>
 
 <div id="speedo" class="hud">

@@ -1,15 +1,13 @@
 import { Mesh, PlaneGeometry, Quaternion, Vector3 } from "three/webgpu";
 
-import { COLORS, OBSTACLES_ENABLED, SUSPENSION_ANCHOR_Y, WHEELS } from "./constants";
+import { FIELD_SIZE, OBSTACLES_ENABLED } from "./constants";
 import { KeyboardInput } from "./core/Input";
 import { Loop } from "./core/Loop";
-import { gridSlot } from "./game/grid";
+import { createField, type Racer } from "./game/Racer";
 import { Barriers } from "./physics/Barriers";
 import { Obstacles } from "./physics/Obstacles";
 import { PhysicsDebugRender } from "./physics/DebugRender";
-import { Vehicle, type Spawn } from "./physics/Vehicle";
 import { PhysicsWorld } from "./physics/World";
-import { createCar } from "./render/Car";
 import { createCamera, fitCamera } from "./render/Camera";
 import { PALETTE, flatMaterial } from "./render/materials";
 import { createLighting, createRenderer, createScene } from "./render/Renderer";
@@ -18,18 +16,15 @@ import { TRACKS } from "./track/tracks";
 import { DebugPanel, showFatal } from "./ui/debug";
 
 /**
- * M4: препятствия как настоящие тела.
+ * M5: соперники.
  *
  * Есть: raycast-подвеска, стены по кромкам дороги, газ через частоту нажатий,
- * руль, тормоз, задний ход, занос, конусы и покрышки. Всё это крутится
- * в фиксированном тике, рендер интерполирует между тиками.
+ * руль, тормоз, задний ход, занос, конусы и покрышки, трое соперников с ИИ.
+ * Всё это крутится в фиксированном тике, рендер интерполирует между тиками.
  * Препятствия сейчас отключены флагом OBSTACLES_ENABLED: управление и правила
  * доводятся на чистом полотне, флаг возвращает их обратно.
- * Нет: ИИ (M5), правил (M6).
+ * Нет: правил и фаз уик-энда (M6).
  */
-
-/** чуть выше земли, чтобы на старте колёса не оказались в полу */
-const SPAWN_LIFT = 0.1;
 
 async function main(): Promise<void> {
   const app = document.getElementById("app");
@@ -51,9 +46,6 @@ async function main(): Promise<void> {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const car = createCar(COLORS[0]!);
-  scene.add(car.group);
-
   const input = new KeyboardInput();
   const physicsDebug = new URLSearchParams(location.search).has("physics")
     ? new PhysicsDebugRender(physics, scene)
@@ -63,12 +55,7 @@ async function main(): Promise<void> {
   let track: Track | null = null;
   let barriers: Barriers | null = null;
   let obstacles: Obstacles | null = null;
-  let vehicle: Vehicle | null = null;
-
-  function spawnPoint(t: Track): Spawn {
-    const slot = gridSlot(t, 0);
-    return { position: slot.position.clone().setY(SPAWN_LIFT), heading: slot.heading };
-  }
+  let racers: Racer[] = [];
 
   function loadTrack(index: number): void {
     if (track) {
@@ -90,9 +77,11 @@ async function main(): Promise<void> {
 
     fitCamera(camera, track.path, track.nrm, innerWidth / innerHeight);
 
-    const spawn = spawnPoint(track);
-    if (vehicle) vehicle.reset(spawn);
-    else vehicle = new Vehicle(physics, spawn);
+    // Поле строится заново на каждой трассе: сетка стоит в её координатах, а
+    // переносить четыре тела по кругу дороже и запутаннее, чем пересобрать.
+    for (const r of racers) scene.remove(r.group);
+    racers = createField(physics, track, FIELD_SIZE);
+    for (const r of racers) scene.add(r.group);
 
     input.clear();
     debug.setTrack(index, TRACKS.length, track.def.name);
@@ -106,9 +95,10 @@ async function main(): Promise<void> {
   });
 
   addEventListener("keydown", (e) => {
-    if (e.code === "KeyR" && track && vehicle) {
-      vehicle.reset(spawnPoint(track));
+    if (e.code === "KeyR" && track) {
+      for (const r of racers) r.reset(track);
       obstacles?.reset();
+      input.clear();
       return;
     }
     const n = Number(e.key);
@@ -123,27 +113,23 @@ async function main(): Promise<void> {
 
   const loop = new Loop({
     fixedUpdate: (dt) => {
-      // порядок важен: силы колёс -> шаг мира -> снять трансформ
-      vehicle!.update(input.read(), dt);
+      // порядок важен: силы колёс -> шаг мира -> снять трансформ.
+      // Клавиатура читается ОДИН раз на тик: read() обнуляет накопленные нажатия,
+      // и второй вызов внутри цикла по участникам съедал бы газ игрока.
+      const human = input.read();
+      const t = track!;
+      for (const r of racers) r.vehicle.update(r.think(t, dt, human), dt);
       physics.step();
-      vehicle!.sync();
+      for (const r of racers) r.sync(t);
       obstacles?.sync();
     },
     render: (alpha) => {
-      const v = vehicle!;
-      v.interpolate(alpha, framePos, frameRot);
-      car.group.position.copy(framePos);
-      car.group.quaternion.copy(frameRot);
-
-      WHEELS.forEach((spec, i) => {
-        const pivot = car.wheels[i]!;
-        pivot.position.y = SUSPENSION_ANCHOR_Y - v.suspensionLength(i);
-        pivot.rotation.y = spec.front ? v.steering : 0;
-        pivot.rotation.x = v.wheelRotation(i);
-      });
+      for (const r of racers) r.interpolate(alpha, framePos, frameRot);
 
       obstacles?.interpolate(alpha);
-      debug.setDrive(v.speed, v.revsNorm, v.slipAngle);
+      const me = racers[0]!.vehicle;
+      debug.setDrive(me.speed, me.revsNorm, me.slipAngle);
+      debug.setOrder(racers, track!.length);
       physicsDebug?.update();
       renderer.render(scene, camera);
     },
@@ -151,7 +137,16 @@ async function main(): Promise<void> {
 
   if (import.meta.env.DEV) {
     Object.assign(globalThis, {
-      __racer: { scene, camera, renderer, physics, loop, getTrack: () => track, getVehicle: () => vehicle },
+      __racer: {
+        scene,
+        camera,
+        renderer,
+        physics,
+        loop,
+        getTrack: () => track,
+        getRacers: () => racers,
+        getVehicle: () => racers[0]?.vehicle ?? null,
+      },
     });
   }
 
