@@ -355,7 +355,45 @@ export const BARRIER_THICKNESS = 0.6;
 export const GRAVITY = -9.81 * 2.2;
 
 // ---------- препятствия ----------
+/**
+ * Затухание скорости сбитых препятствий, 1/с — число OBS_FRIC из прототипа.
+ * Там оно гасило скорость вручную, здесь идёт в linearDamping тела.
+ */
 export const OBS_FRIC = 2.4;
+export const OBS_ANGULAR_DAMPING = 1.4;
+
+/** конус: лёгкий, разлетается далеко */
+export const CONE_RADIUS = 0.75;
+export const CONE_HEIGHT = 1.7;
+export const CONE_MASS = 6;
+
+/** покрышка: тяжёлая, тормозит и сама катится */
+export const TIRE_RADIUS = 0.85;
+export const TIRE_THICKNESS = 0.5;
+export const TIRE_MASS = 30;
+
+/**
+ * Раскладка — из прототипа: две стопки покрышек на обочине и цепочка конусов
+ * поперёк полотна. Доли вдоль круга и смещения те же самые.
+ */
+export const TIRE_STACK_AT: readonly number[] = [0.2, 0.66];
+export const TIRE_STACK_HEIGHT = 3;
+/**
+ * Стопки стоят у самой кромки, но ВНУТРИ полотна.
+ *
+ * В прототипе они были на обочине (ROAD_HW + 1.6), потому что стен не существовало
+ * и машина спокойно выезжала за кромку. С барьерами из M2 обочина недостижима:
+ * стена стоит на ROAD_HW, и стопка за ней превращалась в декорацию, до которой
+ * нельзя доехать. Поэтому смещение отражено внутрь — покрышки задевает тот, кто
+ * прижимается к краю.
+ */
+export const TIRE_STACK_OFFSET = ROAD_HW - 1.5;
+export const CONE_CHAIN_AT = 0.44;
+export const CONE_CHAIN_COUNT = 4;
+/** через сколько точек осевой линии ставится следующий конус */
+export const CONE_CHAIN_STEP = 4;
+/** конусы стоят в шахматном порядке по обе стороны от оси */
+export const CONE_CHAIN_LATERAL = 3.4;
 
 // ---------- правила уик-энда ----------
 export const TOTAL_LAPS = 3;

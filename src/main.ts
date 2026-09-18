@@ -5,6 +5,7 @@ import { KeyboardInput } from "./core/Input";
 import { Loop } from "./core/Loop";
 import { gridSlot } from "./game/grid";
 import { Barriers } from "./physics/Barriers";
+import { Obstacles } from "./physics/Obstacles";
 import { PhysicsDebugRender } from "./physics/DebugRender";
 import { Vehicle, type Spawn } from "./physics/Vehicle";
 import { PhysicsWorld } from "./physics/World";
@@ -17,12 +18,12 @@ import { TRACKS } from "./track/tracks";
 import { DebugPanel, showFatal } from "./ui/debug";
 
 /**
- * M2: машина едет на физике Rapier.
+ * M4: препятствия как настоящие тела.
  *
  * Есть: raycast-подвеска, стены по кромкам дороги, газ через частоту нажатий,
- * руль, тормоз, задний ход. Всё это крутится в фиксированном тике,
- * рендер интерполирует между тиками.
- * Нет: заноса (M3), препятствий (M4), ИИ (M5), правил (M6).
+ * руль, тормоз, задний ход, занос, конусы и покрышки. Всё это крутится
+ * в фиксированном тике, рендер интерполирует между тиками.
+ * Нет: ИИ (M5), правил (M6).
  */
 
 /** чуть выше земли, чтобы на старте колёса не оказались в полу */
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
   let trackIndex = 0;
   let track: Track | null = null;
   let barriers: Barriers | null = null;
+  let obstacles: Obstacles | null = null;
   let vehicle: Vehicle | null = null;
 
   function spawnPoint(t: Track): Spawn {
@@ -72,12 +74,15 @@ async function main(): Promise<void> {
       disposeTrack(track);
     }
     barriers?.dispose();
+    obstacles?.dispose();
 
     trackIndex = index;
     // сид от индекса: декор одной и той же трассы не пляшет между запусками
     track = buildTrack(TRACKS[index]!, index + 1);
     scene.add(track.group);
     barriers = new Barriers(physics, track);
+    // сид тот же, что у декора: раскладка препятствий не пляшет между запусками
+    obstacles = new Obstacles(physics, track, scene, index + 1);
 
     fitCamera(camera, track.path, track.nrm, innerWidth / innerHeight);
 
@@ -99,6 +104,7 @@ async function main(): Promise<void> {
   addEventListener("keydown", (e) => {
     if (e.code === "KeyR" && track && vehicle) {
       vehicle.reset(spawnPoint(track));
+      obstacles?.reset();
       return;
     }
     const n = Number(e.key);
@@ -117,6 +123,7 @@ async function main(): Promise<void> {
       vehicle!.update(input.read(), dt);
       physics.step();
       vehicle!.sync();
+      obstacles!.sync();
     },
     render: (alpha) => {
       const v = vehicle!;
@@ -131,6 +138,7 @@ async function main(): Promise<void> {
         pivot.rotation.x = v.wheelRotation(i);
       });
 
+      obstacles!.interpolate(alpha);
       debug.setDrive(v.speed, v.revsNorm, v.slipAngle);
       physicsDebug?.update();
       renderer.render(scene, camera);
