@@ -34,9 +34,9 @@ import {
   REV_PEAK,
   ROLL_RESIST_FORCE,
   SIDE_FRICTION_FRONT,
-  SIDE_FRICTION_FRONT_TURN,
+  SIDE_FRICTION_FRONT_DRIFT,
   SIDE_FRICTION_REAR,
-  SIDE_FRICTION_REAR_TURN,
+  SIDE_FRICTION_REAR_DRIFT,
   STEER_MAX,
   STEER_RATE,
   STEER_SPEED_FALLOFF,
@@ -179,6 +179,17 @@ export class Vehicle {
 
     this.inertiaY = this.body.principalInertia().y;
 
+    if (import.meta.env.DEV) {
+      // Ловушка на перепутанное направление: сцепление в заносе обязано быть ниже обычного.
+      if (SIDE_FRICTION_FRONT_DRIFT >= SIDE_FRICTION_FRONT || SIDE_FRICTION_REAR_DRIFT >= SIDE_FRICTION_REAR) {
+        console.warn(
+          "[vehicle] сцепление в заносе не ниже обычного — заноса не будет: " +
+            `перед ${SIDE_FRICTION_FRONT_DRIFT} против ${SIDE_FRICTION_FRONT}, ` +
+            `зад ${SIDE_FRICTION_REAR_DRIFT} против ${SIDE_FRICTION_REAR}`,
+        );
+      }
+    }
+
     this.readTransform(this.currPos, this.currRot);
     this.prevPos.copy(this.currPos);
     this.prevRot.copy(this.currRot);
@@ -221,8 +232,8 @@ export class Vehicle {
     // Доля выворота от текущего максимума, за вычетом мёртвой зоны: подруливание
     // на прямой сцепление не трогает, а заметный поворот срывает обе оси.
     const k = this.driftFactor;
-    const frontSide = SIDE_FRICTION_FRONT + (SIDE_FRICTION_FRONT_TURN - SIDE_FRICTION_FRONT) * k;
-    const rearSide = SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_TURN - SIDE_FRICTION_REAR) * k;
+    const frontSide = SIDE_FRICTION_FRONT + (SIDE_FRICTION_FRONT_DRIFT - SIDE_FRICTION_FRONT) * k;
+    const rearSide = SIDE_FRICTION_REAR + (SIDE_FRICTION_REAR_DRIFT - SIDE_FRICTION_REAR) * k;
 
     WHEELS.forEach((w, i) => {
       const slip = w.front
