@@ -137,7 +137,7 @@ export const SIDE_FRICTION_FRONT_TURN = 0.05;
  * приходить туда, где игрок его просит, и не приходить, где не просит.
  */
 export const SIDE_FRICTION_REAR = 0.7;
-export const SIDE_FRICTION_REAR_TURN = 0.028;
+export const SIDE_FRICTION_REAR_TURN = 0.5;
 
 /**
  * Стабилизатор заноса.
@@ -191,7 +191,7 @@ export const DRIFT_RELEASE_RATE = 3.5;
  * бесконечно и машина едет не только вбок, но и вперёд.
  */
 export const GRIP_ALIGN_RATE = 2.2;
-export const GRIP_ALIGN_DRIFT = 0.12;
+export const GRIP_ALIGN_DRIFT = 0.99;
 /** ниже этой скорости стабилизатор молчит */
 export const DRIFT_MIN_SPEED = 2;
 
