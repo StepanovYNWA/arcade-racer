@@ -1,6 +1,6 @@
 import { Mesh, PlaneGeometry, Quaternion, Vector3 } from "three/webgpu";
 
-import { COLORS, SUSPENSION_ANCHOR_Y, WHEELS } from "./constants";
+import { COLORS, OBSTACLES_ENABLED, SUSPENSION_ANCHOR_Y, WHEELS } from "./constants";
 import { KeyboardInput } from "./core/Input";
 import { Loop } from "./core/Loop";
 import { gridSlot } from "./game/grid";
@@ -23,6 +23,8 @@ import { DebugPanel, showFatal } from "./ui/debug";
  * Есть: raycast-подвеска, стены по кромкам дороги, газ через частоту нажатий,
  * руль, тормоз, задний ход, занос, конусы и покрышки. Всё это крутится
  * в фиксированном тике, рендер интерполирует между тиками.
+ * Препятствия сейчас отключены флагом OBSTACLES_ENABLED: управление и правила
+ * доводятся на чистом полотне, флаг возвращает их обратно.
  * Нет: ИИ (M5), правил (M6).
  */
 
@@ -82,7 +84,9 @@ async function main(): Promise<void> {
     scene.add(track.group);
     barriers = new Barriers(physics, track);
     // сид тот же, что у декора: раскладка препятствий не пляшет между запусками
-    obstacles = new Obstacles(physics, track, scene, index + 1);
+    obstacles = OBSTACLES_ENABLED
+      ? new Obstacles(physics, track, scene, index + 1)
+      : null;
 
     fitCamera(camera, track.path, track.nrm, innerWidth / innerHeight);
 
@@ -123,7 +127,7 @@ async function main(): Promise<void> {
       vehicle!.update(input.read(), dt);
       physics.step();
       vehicle!.sync();
-      obstacles!.sync();
+      obstacles?.sync();
     },
     render: (alpha) => {
       const v = vehicle!;
@@ -138,7 +142,7 @@ async function main(): Promise<void> {
         pivot.rotation.x = v.wheelRotation(i);
       });
 
-      obstacles!.interpolate(alpha);
+      obstacles?.interpolate(alpha);
       debug.setDrive(v.speed, v.revsNorm, v.slipAngle);
       physicsDebug?.update();
       renderer.render(scene, camera);
