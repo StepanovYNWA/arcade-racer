@@ -191,7 +191,7 @@ export const DRIFT_IDLE_ANGLE = 0.05;
  */
 export const DRIFT_HOLD_TIME = 0.45;
 export const DRIFT_HOLD_RAMP = 0.25;
-export const DRIFT_RELEASE_RATE = 1.3;
+export const DRIFT_RELEASE_RATE = 0.3;
 /**
  * Пауза перед возвратом сцепления после отпускания руля, с.
  *
@@ -203,7 +203,7 @@ export const DRIFT_RELEASE_RATE = 1.3;
  * Пауза короткая намеренно: держать сцепление низким долго — значит вернуть ту самую
  * защёлку, из-за которой машину заносило от любого следующего касания руля.
  */
-export const DRIFT_COAST_TIME = 0.2;
+export const DRIFT_COAST_TIME = 0.5;
 
 /**
  * Возврат вектора скорости к курсу, рад/с: вне заноса и в заносе.
@@ -242,7 +242,7 @@ export const YAW_FOLLOW = 7.0;
  * Теперь на отпущенном руле хватка падает пропорционально глубине срыва: корпус
  * доворачивается по инерции и распрямляется сам, гасясь трением и ANGULAR_DAMPING.
  */
-export const YAW_RELEASE_RELIEF = 0.9;
+export const YAW_RELEASE_RELIEF = 0.5;
 /**
  * Потолок скорости доворота, рад/с (~69°/с).
  *
